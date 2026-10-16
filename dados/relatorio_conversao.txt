@@ -1,0 +1,82 @@
+======================================================================
+RELATÓRIO DE CONVERSÃO DE CONTEÚDO — MICROESTUDO OVERLAY
+======================================================================
+
+Arquivo de origem:     conteudo.md
+Total de cards:        888
+Faixa de caracteres:   min=30, media=130.0, max=544
+Faixa configurada:     min_chars=90, max_chars=220
+
+----------------------------------------------------------------------
+DISTRIBUIÇÃO DE CARDS POR ASSUNTO:
+----------------------------------------------------------------------
+• 1. Estado, Governo e Administração Pública: Conceito...: 148 cards
+• 10. Noções de Licitações e Contratos (Lei nº 14.133/2021 e...: 115 cards
+• 2. Ato Administrativo: 101 cards
+• 3. Agentes Públicos: 97 cards
+• 4. Direito Administrativo Disciplinar: 71 cards
+• 8. Evolução dos Modelos de Gestão Pública: Patrimonialismo...: 66 cards
+• 12. Lei Geral de Proteção de Dados Pessoais (Lei nº...: 54 cards
+• 9. Governança na Administração Pública: 52 cards
+• 5. Poderes Administrativos: 50 cards
+• 6. Responsabilidade Civil do Estado: 37 cards
+• 7. Improbidade Administrativa (Lei nº 8.429/1992 e suas...: 36 cards
+• 11. Lei de Acesso à Informação (Lei nº 12.527/2011 e suas...: 31 cards
+• 13. Guia de Revisão Rápida, Mnemônicos Estratégicos e Prazos...: 30 cards
+
+----------------------------------------------------------------------
+SEÇÕES IGNORADAS CONFORME ESPECIFICAÇÃO:
+----------------------------------------------------------------------
+• Linha 6: 'Mapeamento das Fontes e Rastreabilidade do Acervo Local'
+
+----------------------------------------------------------------------
+ELEMENTOS ESPECIAIS E LIMITAÇÕES REGISTRADAS:
+----------------------------------------------------------------------
+• Diagrama ASCII conceitual preservado/registrado na linha 30 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Tabela com 3 colunas e 3 linhas na linha 48.
+• Diagrama ASCII conceitual preservado/registrado na linha 57 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Tabela com 2 colunas e 8 linhas na linha 156.
+• Diagrama ASCII conceitual preservado/registrado na linha 173 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 214 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Tabela com 6 colunas e 10 linhas na linha 236.
+• Diagrama ASCII conceitual preservado/registrado na linha 314 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 390 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 450 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 497 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 558 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 590 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 631 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 759 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 813 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 874 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 960 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 975 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1000 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1036 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1076 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1140 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1195 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1237 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1267 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1355 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1427 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1501 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1514 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1528 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1565 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1601 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1733 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1767 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 1816 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Tabela com 4 colunas e 2 linhas na linha 1842.
+• Diagrama ASCII conceitual preservado/registrado na linha 1954 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 2022 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 2069 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 2138 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 2196 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Diagrama ASCII conceitual preservado/registrado na linha 2265 (conteúdo não linear omitido do pop-up para manter legibilidade).
+• Tabela com 4 colunas e 23 linhas na linha 2286.
+
+======================================================================
+FIM DO RELATÓRIO
+======================================================================
