@@ -24,6 +24,7 @@ Valida todos os critérios de aceitação estipulados na Seção 8.1 da especifi
 """
 
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -337,6 +338,178 @@ A forma escrita é a regra geral no direito público brasileiro.
         self.assertTrue(any("Administrar serviços públicos" in t for t in textos))
         self.assertTrue(any("Editar decretos regulamentares" in t for t in textos))
 
+    # 18. Parágrafos introdutórios e ausência de cards terminados com ':'
+    def test_18_sem_cards_com_dois_pontos_finais(self):
+        md = """# Direito Administrativo
+## Binômio Estruturante
+Todo o Direito Administrativo repousa sobre duas vigas mestras opostas e complementares:
+1. **Supremacia do Interesse Público**: Confere prerrogativas ao Estado sobre o particular.
+2. **Indisponibilidade do Interesse Público**: Impõe limites ao gestor público.
+"""
+        caminho = self._criar_arquivo_md(md)
+        p = ParserMarkdown(min_chars=30, max_chars=220)
+        p.processar_arquivo(caminho)
+
+        self.assertGreater(len(p.cards), 0)
+        for c in p.cards:
+            self.assertFalse(c.texto.endswith(":"), f"Card {c.id} terminou com ':'!")
+
+    # 19. Cláusulas de exemplo e balanceamento de parênteses
+    def test_19_clausula_exemplo_sem_parenteses_abertos(self):
+        md = """# Conceitos
+## Poderes
+1. **Poder de Polícia**: Restringe e condiciona o uso de bens e liberdades individuais em favor do interesse público (ex: fiscalização sanitária de restaurantes, apreensão de mercadorias adulteradas e interdição de estabelecimentos irregulares).
+"""
+        caminho = self._criar_arquivo_md(md)
+        p = ParserMarkdown(min_chars=30, max_chars=180)
+        p.processar_arquivo(caminho)
+
+        self.assertGreater(len(p.cards), 0)
+        for c in p.cards:
+            self.assertEqual(c.texto.count('('), c.texto.count(')'), f"Card {c.id} possui parênteses desbalanceados: {c.texto}")
+    # 20. Sub-itens introdutórios aninhados e ausência de ponto-e-vírgula residual
+    def test_20_subitens_introdutorios_e_sem_ponto_e_virgula(self):
+        md = """# Princípios
+## Publicidade
+4. **Princípio da Publicidade**:
+   - Regra geral: todo ato administrativo deve ser público e transparente.
+   - *Exceções constitucionais ao dever de publicidade* (art. 5º, X e XXXIII, CF):
+     - Atos que envolvam a segurança da sociedade e do Estado;
+     - Defesa da intimidade, vida privada, honra e imagem dos cidadãos.
+"""
+        caminho = self._criar_arquivo_md(md)
+        p = ParserMarkdown(min_chars=30, max_chars=220)
+        p.processar_arquivo(caminho)
+
+        self.assertGreater(len(p.cards), 0)
+        for c in p.cards:
+            self.assertFalse(c.texto.endswith(";"), f"Card {c.id} terminou com ';'!")
+            self.assertFalse(c.texto.endswith(":"), f"Card {c.id} terminou com ':'!")
+            self.assertTrue(c.texto.endswith(('.', '!', '?')), f"Card {c.id} não possui pontuação terminal!")
+
+        # Verifica se as exceções foram agrupadas com contexto
+        textos = [c.texto for c in p.cards]
+        excecao_encontrada = any("segurança da sociedade e do Estado" in t and "Exceções constitucionais" in t for t in textos)
+        self.assertTrue(excecao_encontrada, "Exceções constitucionais não foram devidamente sintetizadas com seu cabeçalho!")
+
+    # 21. Preservação íntegra de orações jurídicas com ressalvas (salvo...)
+    def test_21_oracao_com_ressalva_mantida_integra(self):
+        md = """# Jurisprudência
+## Súmula Vinculante 13
+> **Exceção Consolidada no STF**: A vedação da SV 13 não se aplica, em regra, à nomeação para cargos políticos (Ministro de Estado, Secretário Estadual ou Municipal), salvo nos casos de comprovada fraude à lei ou evidente falta de qualificação técnica para a função.
+"""
+        caminho = self._criar_arquivo_md(md)
+        p = ParserMarkdown(min_chars=60, max_chars=220)
+        p.processar_arquivo(caminho)
+
+        self.assertEqual(len(p.cards), 1, "A oração com ressalva deveria ter sido mantida íntegra em um único card!")
+        self.assertIn("salvo nos casos de comprovada fraude à lei", p.cards[0].texto)
+        self.assertTrue(p.cards[0].texto.endswith("."))
+
+
+    # 22. Cláusulas subordinadas em listas sem negrito preservam premissa introdutória
+    def test_22_oracoes_subordinadas_em_listas_com_premissa(self):
+        md = """# Direito Administrativo
+## Atos Administrativos
+#### Dever de Motivação dos Atos Administrativos (Art. 50)
+Os atos administrativos deverão ser motivados, com indicação expressa dos fatos e dos fundamentos jurídicos, quando:
+1. Neguem, limitem ou afetem direitos ou interesses;
+2. Imponham ou agravem deveres, encargos ou sanções;
+3. Decidam recursos administrativos;
+4. Decorram de reexame de ofício;
+5. Deixem de aplicar jurisprudência firmada sobre a questão;
+6. Veiculem decisão de revogação, anulação ou suspensão de ato administrativo.
+- *Motivação Aliunde*: É válida a motivação que consistir na expressa concordância com fundamentos de pareceres anteriores.
+"""
+        caminho = self._criar_arquivo_md(md)
+        p = ParserMarkdown(min_chars=50, max_chars=260)
+        p.processar_arquivo(caminho)
+
+        textos = [c.texto for c in p.cards]
+        # Nenhum card pode ser apenas a cláusula subordinada órfã
+        for t in textos:
+            self.assertNotEqual(t.strip(), "Imponham ou agravem deveres, encargos ou sanções.")
+            self.assertNotEqual(t.strip(), "Neguem, limitem ou afetem direitos ou interesses.")
+
+        # O item 2 deve estar acompanhado da oração principal (quando:)
+        card_com_imponham = [t for t in textos if "Imponham ou agravem deveres" in t]
+        self.assertTrue(len(card_com_imponham) > 0, "O item 'Imponham...' deve existir nos cards!")
+        self.assertIn("deverão ser motivados", card_com_imponham[0])
+        self.assertIn("quando:", card_com_imponham[0])
+
+        # O item de Motivação Aliunde deve ser processado independentemente
+        card_aliunde = [t for t in textos if "Motivação Aliunde" in t or "concordância com fundamentos" in t]
+        self.assertTrue(len(card_aliunde) > 0, "O item 'Motivação Aliunde' deve ter seu próprio card!")
+
+        # Também deve funcionar quando houver linha em branco entre a premissa e a lista
+        md_com_linha_branca = """# Direito Administrativo
+## Atos
+#### Dever de Motivação
+Os atos administrativos deverão ser motivados, quando:
+
+1. Neguem direitos;
+2. Imponham sanções.
+"""
+        caminho2 = self._criar_arquivo_md(md_com_linha_branca, "teste_branca.md")
+        p2 = ParserMarkdown(min_chars=30, max_chars=200)
+        p2.processar_arquivo(caminho2)
+        textos2 = [c.texto for c in p2.cards]
+        self.assertTrue(any("deverão ser motivados, quando:" in t and "Imponham sanções" in t for t in textos2))
+
+    # 23. Sub-itens sob premissa introdutória em lista preservam contexto e IDs únicos sem bullets órfãos
+    def test_23_itens_de_lista_com_premissa_e_subitens_sem_perda_de_contexto(self):
+        md = """# Proteção de Dados
+## Sanções Administrativas
+- **Sanções Aplicadas pela Autoridade (Art. 52)**:
+  1. Advertência, com fixação de prazo para medidas corretivas;
+  2. Multa simples de até 2% do faturamento da pessoa jurídica de direito privado, limitada a 50 milhões de reais;
+  3. Bloqueio dos dados pessoais objeto da infração.
+- Não sendo possível resposta imediata, o órgão tem 20 dias para:
+  1. Fornecer a informação requerida;
+  2. Comunicar que não possui a informação e indicar o órgão competente para fornecê-la de forma tempestiva.
+"""
+        caminho = self._criar_arquivo_md(md, "teste_subitens.md")
+        p = ParserMarkdown(min_chars=30, max_chars=220)
+        p.processar_arquivo(caminho)
+
+        self.assertGreater(len(p.cards), 0)
+        ids = [c.id for c in p.cards]
+        self.assertEqual(len(ids), len(set(ids)), "Todos os cards gerados devem ter IDs únicos sem colisão!")
+
+        for c in p.cards:
+            self.assertFalse(c.texto.startswith(("- ", "* ", "+ ")), f"Card {c.id} possui bullet inicial órfão: {c.texto}")
+            if "Multa simples" in c.texto:
+                self.assertIn("Sanções Aplicadas pela Autoridade", c.texto, "Card de sanção não deve perder a premissa introdutória!")
+            if "Comunicar que não possui" in c.texto:
+                self.assertIn("órgão tem 20 dias", c.texto, "Card de prazo não deve perder a premissa introdutória!")
+
+    # 24. Cláusulas coordenadas/subordinadas ('mas sim', 'bem como', 'desde que') não viram fragmentos órfãos
+    def test_24_oracoes_com_conectivos_subordinados_nao_geram_fragmentos_orfaos(self):
+        md = """# Direito Administrativo
+## Poderes
+#### 1. Poderes Administrativos e Finalidades
+Os poderes administrativos não são privilégios, mas sim verdadeiros poderes-deveres irrenunciáveis para que o Estado atinja o bem comum.
+- **Súmula Vinculante 5**: A presença de advogado é facultativa no PAD, ressalvada a obrigatoriedade de defensor dativo se o acusado for revel.
+- **Licitação Deserta**: Permite contratação direta por dispensa, desde que mantidas todas as condições pré-fixadas no edital originário.
+- **Setor Obrigatório**: Aplica-se a órgãos da administração direta, bem como a autarquias e fundações públicas.
+"""
+        caminho = self._criar_arquivo_md(md, "teste_subordinadas.md")
+        p = ParserMarkdown(min_chars=30, max_chars=220)
+        p.processar_arquivo(caminho)
+
+        self.assertGreater(len(p.cards), 0)
+        for c in p.cards:
+            self.assertFalse(re.search(r'^(?:mas sim|bem como|ressalvada|desde que)\b', c.texto, flags=re.IGNORECASE),
+                             f"Card {c.id} gerou fragmento subordinado órfão: '{c.texto}'")
+            self.assertFalse(c.texto.startswith(("1. ", "1) ")), f"Card {c.id} iniciou com numeração residual: '{c.texto}'")
+            self.assertFalse(c.titulo.startswith(("1. ", "1) ")), f"Título {c.id} iniciou com numeração residual: '{c.titulo}'")
+
+        textos = [c.texto for c in p.cards]
+        self.assertTrue(any("não são privilégios, mas sim" in t for t in textos), "A oração com 'mas sim' não foi preservada íntegra!")
+        self.assertTrue(any("facultativa no PAD, ressalvada" in t for t in textos), "A oração com 'ressalvada' não foi preservada íntegra!")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

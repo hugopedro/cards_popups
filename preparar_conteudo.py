@@ -83,36 +83,83 @@ def limpar_markdown(texto):
 
 def gerar_id(assunto, subtema, titulo, texto):
     """Gera um hash estável e determinístico de 12 caracteres hexadecimais."""
-    chave = f"{assunto}|{subtema}|{titulo}|{texto[:80]}".encode('utf-8', errors='ignore')
+    chave = f"{assunto}|{subtema}|{titulo}|{texto}".encode('utf-8', errors='ignore')
     return hashlib.sha256(chave).hexdigest()[:12]
 
 
 def quebrar_em_limite_de_palavra(texto, max_chars):
     """
     Quebra sentenças longas no limite de palavra ou oração mais próximo de max_chars.
-    NUNCA divide palavras ao meio nem faz fatiamento arbitrário por índice.
+    NUNCA divide palavras ao meio, evita cortar dentro de parênteses e trata cláusulas
+    de exemplo sem deixar pontuações ou parênteses soltos.
     """
     texto = texto.strip()
     if len(texto) <= max_chars:
         return [texto]
 
-    # 1. Tenta quebrar por pontuação de oração (;, —, –, ,, :) dentro do limite
-    pontuacoes = ['; ', ' — ', ' – ', ', ', ': ']
+    # Se há cláusula de exemplos como (ex: ...) que causa estouro, tenta quebrar antes dela
+    match_ex = re.search(r'\s*\((?:ex|ex\.|exemplo|exemplos)\s*:\s*([^)]+)\)', texto, flags=re.IGNORECASE)
+    if match_ex:
+        pos_inicio_ex = match_ex.start()
+        if 40 <= pos_inicio_ex <= max_chars:
+            parte1 = texto[:pos_inicio_ex].strip().rstrip(' ,;:-–—(')
+            if not parte1.endswith(('.', '!', '?')):
+                parte1 += '.'
+            conteudo_ex = match_ex.group(1).strip().rstrip('.) ')
+            parte2 = f"Exemplos: {conteudo_ex}."
+            return [parte1, parte2]
+
+    padroes_subordinados = (
+        r'^\s*(?:mas sim|bem como|assim como|ressalvada?s?|salvo|exceto|'
+        r'desde que|sob pena de|a menos que|salvo se|n[ãa]o obstante)\b'
+    )
+
+    # 1. Tenta quebrar por pontuação de oração (;, —, –, ,) garantindo que NÃO esteja dentro de parênteses abertos
+    # NOTA: ':' foi removido de propósito para evitar deixar 'ex:' ou termos suspensos
+    pontuacoes = ['; ', ' — ', ' – ', ', ']
     melhor_pos = -1
 
     for pont in pontuacoes:
-        pos = texto.rfind(pont, 0, max_chars)
-        if pos >= 50:  # Garante pelo menos 50 caracteres no primeiro fragmento
-            melhor_pos = pos + len(pont.rstrip())
+        idx = max_chars
+        while idx > 45:
+            pos = texto.rfind(pont, 0, idx)
+            if pos < 45:
+                break
+            # Verifica balanceamento de parênteses
+            abertos = texto[:pos].count('(') - texto[:pos].count(')')
+            if abertos <= 0:
+                # Se for vírgula seguida de conectivo que gera oração subordinada dependente, não quebra aqui
+                if pont.strip() == ',':
+                    resto = texto[pos + len(pont):]
+                    if re.search(padroes_subordinados, resto, flags=re.IGNORECASE):
+                        idx = pos
+                        continue
+                melhor_pos = pos + len(pont.rstrip())
+                break
+            idx = pos
+        if melhor_pos != -1:
             break
 
-    # 2. Se não houver pontuação intermediária, quebra no último espaço antes de max_chars
+    # 2. Se não houver pontuação intermediária fora de parênteses, quebra no último espaço fora de parênteses
+    if melhor_pos == -1:
+        idx = max_chars
+        while idx > 40:
+            pos = texto.rfind(' ', 0, idx)
+            if pos < 40:
+                break
+            abertos = texto[:pos].count('(') - texto[:pos].count(')')
+            if abertos <= 0:
+                melhor_pos = pos
+                break
+            idx = pos
+
+    # 3. Se ainda assim não encontrou, busca último espaço antes de max_chars
     if melhor_pos == -1:
         pos = texto.rfind(' ', 0, max_chars)
         if pos >= 40:
             melhor_pos = pos
 
-    # 3. Se ainda assim não encontrou (palavra muito longa), procura o próximo espaço logo após max_chars
+    # 4. Fallback: procura o próximo espaço logo após max_chars
     if melhor_pos == -1:
         pos = texto.find(' ', max_chars)
         if pos != -1:
@@ -120,8 +167,22 @@ def quebrar_em_limite_de_palavra(texto, max_chars):
         else:
             return [texto]
 
-    parte1 = texto[:melhor_pos].strip()
-    parte2 = texto[melhor_pos:].strip()
+    parte1 = texto[:melhor_pos].strip().rstrip(' ,;:-–—(')
+    parte2 = texto[melhor_pos:].strip().lstrip(' ,;:-–—)')
+
+    parte2_limpa = re.sub(r'^(?:e|ou|de|que|com|para)\s+', '', parte2, flags=re.IGNORECASE).lstrip(',;:—– ')
+    if re.search(padroes_subordinados, parte2_limpa, flags=re.IGNORECASE):
+        return [texto]
+
+    # Balancear parênteses
+    if parte1.count('(') > parte1.count(')'):
+        parte1 += ')'
+    if parte2.count(')') > parte2.count('('):
+        parte2 = parte2.rstrip(')')
+
+    # Garantir que parte1 termine com ponto final se não tiver pontuação terminal
+    if not parte1.endswith(('.', '!', '?')):
+        parte1 += '.'
 
     # Sanitiza parte2: remove conectivos ou pontuações órfãs no início
     parte2 = re.sub(r'^(?:e|ou|de|que|com|para)\s+', '', parte2, flags=re.IGNORECASE)
@@ -137,6 +198,7 @@ def quebrar_em_limite_de_palavra(texto, max_chars):
             resultado.append(parte2)
 
     return resultado
+
 
 
 def encurtar_no_limite_de_palavra(texto: str, max_chars: int) -> str:
@@ -159,6 +221,7 @@ def dividir_em_sentencas(texto, max_chars=220):
     """
     Divide texto em sentenças respeitando abreviações doutrinárias e pontuação jurídica.
     Evita quebras indevidas em artigos de lei, números de processos e siglas.
+    Permite uma margem de tolerância para manter orações completas sem fatiamento artificial.
     """
     abrevs = [
         (r'\bart\.', 'art@@'),
@@ -188,9 +251,11 @@ def dividir_em_sentencas(texto, max_chars=220):
     resultado = []
     for parte in partes:
         p = parte.replace('@@', '.')
-        p = p.strip()
+        p = re.sub(r'^[-*+>]\s+', '', p).strip()
         if p:
-            if len(p) > max_chars:
+            p_limpo = limpar_markdown(p)
+            limite = max(max_chars + 38, 305) if max_chars >= 180 else max_chars + 38
+            if len(p_limpo) > limite:
                 resultado.extend(quebrar_em_limite_de_palavra(p, max_chars))
             else:
                 resultado.append(p)
@@ -260,20 +325,40 @@ class ParserMarkdown:
         if not texto_limpo or len(texto_limpo) < 30:
             return
 
-        # Ignorar fragmentos puramente introdutórios sem conteúdo substantivo
-        if texto_limpo.endswith(":") and len(texto_limpo) < 55:
+        # NUNCA emitir card cujo texto termine com dois-pontos isolados (conteúdo cortado)
+        if texto_limpo.endswith(":"):
             return
+
+        # Limpar marcador de bullet inicial residual (- , * , + , > , 1. , 1) ) e artefatos de dois-pontos ou ponto-e-vírgula com hífen
+        texto_limpo = re.sub(r'^(?:[-*+>]|\d+[\.\)]|[a-zA-Z][\.\)])\s+', '', texto_limpo).strip()
+        texto_limpo = re.sub(r'[:;]\s*[-*+>]\s+', lambda m: m.group(0)[0] + ' ', texto_limpo)
+        if not texto_limpo or len(texto_limpo) < 30:
+            return
+
+        # Balanceamento preventivo de parênteses no corpo do card
+        if texto_limpo.count('(') > texto_limpo.count(')'):
+            texto_limpo += ')'
+        # Garantir início com letra maiúscula
+        if texto_limpo and texto_limpo[0].islower():
+            texto_limpo = texto_limpo[0].upper() + texto_limpo[1:]
+
+        # Garantir pontuação final adequada (sem ponto-e-vírgula ou vírgula no fim)
+        texto_limpo = texto_limpo.rstrip(' ,;:-–—')
+        if not texto_limpo.endswith(('.', '!', '?')):
+            texto_limpo += '.'
 
         # Ajuste de tamanho de assunto, subtema e título para evitar estouro no overlay
         assunto_fmt = encurtar_no_limite_de_palavra(limpar_markdown(assunto), 65)
 
         subtema_fmt = limpar_markdown(subtema)
+        subtema_fmt = re.sub(r'^\d+[\.\)]\s+', '', subtema_fmt)
         if len(subtema_fmt) > 65:
             partes_sub = [p.strip() for p in subtema_fmt.split("›") if p.strip()]
             subtema_fmt = partes_sub[-1] if partes_sub else subtema_fmt
             subtema_fmt = encurtar_no_limite_de_palavra(subtema_fmt, 65)
 
-        titulo_fmt = encurtar_no_limite_de_palavra(limpar_markdown(titulo), 48)
+        titulo_fmt = re.sub(r'^\d+[\.\)]\s+', '', limpar_markdown(titulo))
+        titulo_fmt = encurtar_no_limite_de_palavra(titulo_fmt, 48)
 
         cid = gerar_id(assunto_fmt, subtema_fmt, titulo_fmt, texto_limpo)
         card = Card(
@@ -424,6 +509,66 @@ class ParserMarkdown:
             match_lista = re.match(r'^(?:[-*+]|\d+[\.\)]|[a-zA-Z][\.\)])\s+(.*)$', linha)
             if match_lista:
                 conteudo_item = match_lista.group(1).strip()
+                match_tem_negrito = re.match(r'^\*{1,2}([^:*]+)\*{1,2}(?:\s*[\(\[]([^:\)\]]+)[\)\]])?\s*(?::|-)\s*(.*)$', conteudo_item)
+
+                # Se for item simples sem negrito e não terminal com ':', agrupa com os consecutivos se houver
+                if not match_tem_negrito and not conteudo_item.endswith(":"):
+                    itens_consecutivos = [conteudo_item]
+                    k = i + 1
+                    while k < total_linhas:
+                        l_k = linhas[k].strip()
+                        if not l_k:
+                            if k + 1 < total_linhas and re.match(r'^(?:[-*+]|\d+[\.\)]|[a-zA-Z][\.\)])\s+', linhas[k+1].strip()):
+                                k += 1
+                                continue
+                            break
+                        if linhas[k].startswith("  ") or linhas[k].startswith("	"):
+                            if itens_consecutivos:
+                                itens_consecutivos[-1] += " " + l_k
+                            k += 1
+                            continue
+                        m_k = re.match(r'^(?:[-*+]|\d+[\.\)]|[a-zA-Z][\.\)])\s+(.*)$', l_k)
+                        if m_k:
+                            texto_k = m_k.group(1).strip()
+                            if re.match(r'^\*{1,2}[^:*]+\*{1,2}\s*(?::|-)', texto_k) or texto_k.endswith(":"):
+                                break
+                            itens_consecutivos.append(texto_k)
+                            k += 1
+                        else:
+                            break
+
+                    if len(itens_consecutivos) >= 2:
+                        subtema_limpo = limpar_markdown(subtema_atual.split('›')[-1].strip())
+                        subtema_limpo = re.sub(r'^\d+[\.\)]\s+', '', subtema_limpo)
+                        tit_sint = encurtar_no_limite_de_palavra(subtema_limpo, 45)
+
+                        itens_limpos = [limpar_markdown(it).rstrip(';.') for it in itens_consecutivos if it]
+                        bloco_itens = []
+                        bloco_atual = []
+                        tam_atual = len(subtema_limpo) + 2
+
+                        for idx_it, it_txt in enumerate(itens_limpos):
+                            it_txt = re.sub(r'^(?:[-*+]|\d+[\.\)]|[a-zA-Z][\.\)])\s+', '', it_txt).strip()
+                            item_fmt = f"{idx_it+1}) {it_txt}"
+                            if tam_atual + len(item_fmt) + 2 <= self.max_chars + 35:
+                                bloco_atual.append(item_fmt)
+                                tam_atual += len(item_fmt) + 2
+                            else:
+                                if bloco_atual:
+                                    bloco_itens.append(bloco_atual)
+                                bloco_atual = [item_fmt]
+                                tam_atual = len(subtema_limpo) + len(item_fmt) + 4
+                        if bloco_atual:
+                            bloco_itens.append(bloco_atual)
+
+                        for b_idx, blk in enumerate(bloco_itens):
+                            t_card = f"{subtema_limpo}: {'; '.join(blk)}."
+                            sub_tit = tit_sint if len(bloco_itens) == 1 else f"{tit_sint} ({b_idx+1})"
+                            self.adicionar_card(assunto_atual, subtema_atual, sub_tit, t_card, f"Linha {num_linha}")
+
+                        i = k
+                        continue
+
                 sub_itens = []
                 j = i + 1
                 while j < total_linhas:
@@ -434,13 +579,13 @@ class ParserMarkdown:
                         # Se for linha em branco, checa se a próxima é um sub-item indentado
                         if j + 1 < total_linhas:
                             prox_apos = linhas[j + 1]
-                            if prox_apos.startswith("  ") or prox_apos.startswith("\t"):
+                            if prox_apos.startswith("  ") or prox_apos.startswith("	"):
                                 j += 1
                                 continue
                         break
 
                     # Sub-itens indentados (2+ espaços ou tab)
-                    if linha_prox.startswith("  ") or linha_prox.startswith("\t"):
+                    if linha_prox.startswith("  ") or linha_prox.startswith("	"):
                         # Extrai o sub-item preservando a formatação de negrito inicial
                         sub_str = re.sub(r'^(?:[-*+]|\d+[\.\)]|[a-zA-Z][\.\)]|>)\s+', '', linha_prox_strip)
                         if sub_str:
@@ -468,8 +613,108 @@ class ParserMarkdown:
                     break
                 paragrafo += " " + linha_seg
                 j += 1
-            i = j - 1
 
+            # Checar se este parágrafo é uma introdução terminada em ':' seguida por uma lista
+            idx_lista = j
+            while idx_lista < total_linhas and not linhas[idx_lista].strip():
+                idx_lista += 1
+
+            if paragrafo.endswith(":") and idx_lista < total_linhas and re.match(r'^(?:[-*+]|\d+[\.\)]|[a-zA-Z][\.\)])\s+', linhas[idx_lista].strip()):
+                k = idx_lista
+                primeira_l = linhas[idx_lista].strip()
+                eh_numerada = bool(re.match(r'^\d+[\.\)]', primeira_l))
+
+                itens_lista_intro = []
+                while k < total_linhas:
+                    l_k = linhas[k].strip()
+                    if not l_k:
+                        k_cand = k + 1
+                        while k_cand < total_linhas and not linhas[k_cand].strip():
+                            k_cand += 1
+                        if k_cand < total_linhas:
+                            prox_l = linhas[k_cand]
+                            prox_l_strip = prox_l.strip()
+                            if prox_l.startswith("  ") or prox_l.startswith("\t"):
+                                k = k_cand
+                                continue
+                            if eh_numerada and re.match(r'^\d+[\.\)]\s+', prox_l_strip):
+                                k = k_cand
+                                continue
+                            if not eh_numerada and re.match(r'^[-*+]\s+', prox_l_strip) and not re.match(r'^[-*+]\s+\*{1,2}[^:*]+\*{1,2}\s*:', prox_l_strip):
+                                k = k_cand
+                                continue
+                        break
+
+                    if linhas[k].startswith("  ") or linhas[k].startswith("	"):
+                        if itens_lista_intro:
+                            l_k_limpo = re.sub(r'^(?:[-*+>]|\d+[\.\)]|[a-zA-Z][\.\)])\s+', '', l_k)
+                            itens_lista_intro[-1] += " " + l_k_limpo
+                        k += 1
+                        continue
+
+                    if eh_numerada and not re.match(r'^\d+[\.\)]\s+', l_k):
+                        break
+                    if not eh_numerada and re.match(r'^\d+[\.\)]\s+', l_k):
+                        break
+                    if l_k.startswith("#") or l_k.startswith(">") or l_k.startswith("|") or l_k.startswith("```"):
+                        break
+
+                    m_item = re.match(r'^(?:[-*+]|\d+[\.\)]|[a-zA-Z][\.\)])\s+(.*)$', l_k)
+                    if m_item:
+                        itens_lista_intro.append(m_item.group(1).strip())
+                    else:
+                        break
+                    k += 1
+
+                paragrafo_limpo = limpar_markdown(paragrafo).rstrip(':')
+                tit_sint = encurtar_no_limite_de_palavra(re.sub(r'^\d+[\.\)]\s+', '', subtema_atual.split('›')[-1].strip()), 45)
+
+                itens_com_def_longa = []
+                for it in itens_lista_intro:
+                    m_def = re.match(r'^\*{1,2}([^:*]+)\*{1,2}(?:\s*[\(\[]([^:\)\]]+)[\)\]])?\s*(?::|-)\s*(.+)$', it)
+                    if m_def and len(m_def.group(3).strip()) >= 30:
+                        itens_com_def_longa.append((m_def.group(1).strip(), m_def.group(3).strip(), it))
+
+                if len(itens_com_def_longa) >= 2 and len(itens_com_def_longa) >= len(itens_lista_intro) // 2:
+                    termos = [limpar_markdown(t[0]) for t in itens_com_def_longa]
+                    sintese = f"{paragrafo_limpo}: " + "; ".join([f"{idx+1}) {t}" for idx, t in enumerate(termos)]) + "."
+                    if len(sintese) <= self.max_chars + 40:
+                        self.adicionar_card(assunto_atual, subtema_atual, tit_sint, sintese, f"Linha {num_linha}")
+
+                    for idx_item, it_texto in enumerate(itens_lista_intro):
+                        self._processar_item_lista(it_texto, [], assunto_atual, subtema_atual, num_linha + idx_item + 1)
+
+                    i = k
+                    continue
+
+                itens_limpos = [limpar_markdown(it).rstrip(';.') for it in itens_lista_intro if it]
+                bloco_itens = []
+                bloco_atual = []
+                tam_atual = len(paragrafo_limpo) + 2
+
+                for idx_it, it_txt in enumerate(itens_limpos):
+                    it_txt = re.sub(r'^(?:[-*+]|\d+[\.\)]|[a-zA-Z][\.\)])\s+', '', it_txt).strip()
+                    item_fmt = f"{idx_it+1}) {it_txt}"
+                    if tam_atual + len(item_fmt) + 2 <= self.max_chars + 35:
+                        bloco_atual.append(item_fmt)
+                        tam_atual += len(item_fmt) + 2
+                    else:
+                        if bloco_atual:
+                            bloco_itens.append(bloco_atual)
+                        bloco_atual = [item_fmt]
+                        tam_atual = len(paragrafo_limpo) + len(item_fmt) + 4
+                if bloco_atual:
+                    bloco_itens.append(bloco_atual)
+
+                for b_idx, blk in enumerate(bloco_itens):
+                    t_card = f"{paragrafo_limpo}: {'; '.join(blk)}."
+                    sub_tit = tit_sint if len(bloco_itens) == 1 else f"{tit_sint} ({b_idx+1})"
+                    self.adicionar_card(assunto_atual, subtema_atual, sub_tit, t_card, f"Linha {num_linha}")
+
+                i = k
+                continue
+
+            i = j - 1
             self._processar_paragrafo(paragrafo, assunto_atual, subtema_atual, num_linha)
             i += 1
 
@@ -497,68 +742,194 @@ class ParserMarkdown:
     def _processar_item_lista(self, item_texto, sub_itens, assunto, subtema, linha_num):
         origem = f"Linha {linha_num}"
 
-        # Verifica se o item possui formato **Termo**: Explicação
-        match_termo = re.match(r'^\*{1,2}([^:*]+)\*{1,2}\s*(?::|-)\s*(.*)$', item_texto)
+        # Verifica se o item possui formato **Termo** [qualificador]: Explicação
+        match_termo = re.match(r'^\*{1,2}([^:*]+)\*{1,2}(?:\s*[\(\[]([^:\)\]]+)[\)\]])?\s*(?::|-)\s*(.*)$', item_texto)
         if match_termo:
             termo = match_termo.group(1).strip()
-            explicacao = match_termo.group(2).strip()
-            titulo = encurtar_no_limite_de_palavra(termo, 45)
+            qualificador = match_termo.group(2)
+            explicacao = match_termo.group(3).strip()
 
-            if explicacao:
+            titulo_base = termo
+            if qualificador:
+                qual_limpo = limpar_markdown(qualificador).strip()
+                if len(f"{termo} ({qual_limpo})") <= 45:
+                    titulo_base = f"{termo} ({qual_limpo})"
+            titulo = encurtar_no_limite_de_palavra(titulo_base, 45)
+
+            if explicacao and not explicacao.endswith(':'):
                 sentencas = dividir_em_sentencas(explicacao, self.max_chars)
                 grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
                 for grp in grupos:
                     self.adicionar_card(assunto, subtema, titulo, grp, origem)
             contexto_item = termo
         else:
+            termo = None
+            explicacao = ""
             # Item sem termo em negrito destacado
             if item_texto.endswith(":") and sub_itens:
                 contexto_item = limpar_markdown(item_texto.rstrip(":"))
             else:
                 sentencas = dividir_em_sentencas(item_texto, self.max_chars)
                 grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
-                titulo = encurtar_no_limite_de_palavra(subtema.split('›')[-1].strip(), 45)
+                subtema_limpo = limpar_markdown(subtema.split('›')[-1].strip())
+                titulo = encurtar_no_limite_de_palavra(subtema_limpo, 45)
                 for grp in grupos:
-                    self.adicionar_card(assunto, subtema, titulo, grp, origem)
+                    texto_final = grp
+                    if not grp.lower().startswith(subtema_limpo.lower()[:8]):
+                        texto_final = f"{subtema_limpo}: {grp}"
+                    self.adicionar_card(assunto, subtema, titulo, texto_final, origem)
                 contexto_item = titulo
 
         # Processar sub-itens
         if sub_itens:
-            # Caso 1: Sub-itens pequenos que formam lista de hipóteses (ex: requisitos ou itens curtos)
-            comprimentos = [len(s) for s in sub_itens]
-            media_len = sum(comprimentos) / len(comprimentos) if comprimentos else 0
+            item_limpo = limpar_markdown(item_texto).strip()
+            item_eh_intro = (
+                item_texto.strip().endswith(":") or
+                item_limpo.endswith(":") or
+                (match_termo and explicacao and explicacao.strip().endswith(":"))
+            )
 
-            if media_len < 55 and not any(re.match(r'^\*{1,2}[^:*]+\*{1,2}\s*(?::|-)', s) for s in sub_itens):
-                agrupados = []
-                bloco_atual = []
-                tamanho_atual = 0
-
-                for s in sub_itens:
-                    s_limpo = limpar_markdown(s).rstrip(';.')
-                    if not s_limpo:
-                        continue
-                    if tamanho_atual + len(s_limpo) + 2 <= self.max_chars:
-                        bloco_atual.append(s_limpo)
-                        tamanho_atual += len(s_limpo) + 2
-                    else:
-                        if bloco_atual:
-                            agrupados.append("; ".join(bloco_atual) + ".")
-                        bloco_atual = [s_limpo]
-                        tamanho_atual = len(s_limpo)
-                if bloco_atual:
-                    agrupados.append("; ".join(bloco_atual) + ".")
-
-                for g_idx, grp_texto in enumerate(agrupados):
-                    sub_titulo = f"{contexto_item}" if len(agrupados) == 1 else f"{contexto_item} ({g_idx+1})"
-                    self.adicionar_card(assunto, subtema, sub_titulo, grp_texto, f"{origem} (sub-itens)")
+            if match_termo and explicacao:
+                premissa_pai = f"{termo}: {explicacao}".rstrip(':').strip()
+            elif match_termo:
+                premissa_pai = termo.rstrip(':').strip()
             else:
-                # Caso 2: Sub-itens estruturados ou extensos
-                for s_idx, sub in enumerate(sub_itens):
-                    sub_origem = f"{origem} (sub-item {s_idx+1})"
-                    match_sub = re.match(r'^\*{1,2}([^:*]+)\*{1,2}\s*(?::|-)\s*(.*)$', sub)
+                premissa_pai = item_limpo.rstrip(':').strip()
+
+            tem_sub_intro_aninhada = any(s.strip().endswith(":") for s in sub_itens)
+
+            # Se o item pai é introdutório e seus sub-itens são uma lista direta sem sub-intros aninhadas
+            if item_eh_intro and not tem_sub_intro_aninhada:
+                itens_com_def_longa = []
+                for sub in sub_itens:
+                    m_def = re.match(r'^\*{1,2}([^:*]+)\*{1,2}(?:\s*[\(\[]([^:\)\]]+)[\)\]])?\s*(?::|-)\s*(.+)$', sub.strip())
+                    if m_def and len(m_def.group(3).strip()) >= 30:
+                        itens_com_def_longa.append((m_def.group(1).strip(), m_def.group(3).strip(), sub))
+
+                if len(itens_com_def_longa) >= 2 and len(itens_com_def_longa) >= len(sub_itens) // 2:
+                    termos = [limpar_markdown(t[0]) for t in itens_com_def_longa]
+                    tit_sint = encurtar_no_limite_de_palavra(premissa_pai, 45)
+                    sintese = f"{premissa_pai}: " + "; ".join([f"{idx+1}) {t}" for idx, t in enumerate(termos)]) + "."
+                    if len(sintese) <= self.max_chars + 40:
+                        self.adicionar_card(assunto, subtema, tit_sint, sintese, origem)
+
+                    for s_idx, sub in enumerate(sub_itens):
+                        self._processar_item_lista(sub, [], assunto, subtema, linha_num + s_idx + 1)
+                    return
+                else:
+                    filhos_limpos = []
+                    for f in sub_itens:
+                        f_l = limpar_markdown(f).rstrip(';.')
+                        f_l = re.sub(r'^(?:[-*+]|\d+[\.\)]|[a-zA-Z][\.\)])\s+', '', f_l).strip()
+                        if f_l:
+                            filhos_limpos.append(f_l)
+
+                    if filhos_limpos:
+                        tit_sint = encurtar_no_limite_de_palavra(premissa_pai, 45)
+                        bloco_atual = []
+                        tam_atual = len(premissa_pai) + 2
+                        lotes = []
+                        for idx_f, f_item in enumerate(filhos_limpos):
+                            item_fmt = f"{idx_f+1}) {f_item}"
+                            if tam_atual + len(item_fmt) + 2 <= self.max_chars + 35:
+                                bloco_atual.append(item_fmt)
+                                tam_atual += len(item_fmt) + 2
+                            else:
+                                if bloco_atual:
+                                    lotes.append(bloco_atual)
+                                bloco_atual = [item_fmt]
+                                tam_atual = len(premissa_pai) + len(item_fmt) + 4
+                        if bloco_atual:
+                            lotes.append(bloco_atual)
+
+                        for l_idx, lote in enumerate(lotes):
+                            t_lote = f"{premissa_pai}: {'; '.join(lote)}."
+                            lote_tit = tit_sint if len(lotes) == 1 else f"{tit_sint} ({l_idx+1})"
+                            self.adicionar_card(assunto, subtema, lote_tit, t_lote, origem)
+                    return
+
+            # Agrupar sub-itens em blocos lógicos reconhecendo itens introdutórios (terminados com ':')
+            blocos_sub = []
+            idx = 0
+            while idx < len(sub_itens):
+                item_s = sub_itens[idx].strip()
+                if item_s.endswith(":") and idx + 1 < len(sub_itens):
+                    intro_item = item_s
+                    filhos = []
+                    idx += 1
+                    while idx < len(sub_itens):
+                        prox_cand = sub_itens[idx].strip()
+                        if prox_cand.endswith(":"):
+                            break
+                        filhos.append(prox_cand)
+                        idx += 1
+                    blocos_sub.append(("intro_com_filhos", intro_item, filhos))
+                else:
+                    blocos_sub.append(("item_simples", item_s, []))
+                    idx += 1
+
+            for b_idx, (tipo, cabecalho, filhos) in enumerate(blocos_sub):
+                sub_origem = f"{origem} (sub-item {b_idx+1})"
+                if tipo == "intro_com_filhos":
+                    intro_limpo = limpar_markdown(cabecalho).rstrip(':')
+                    match_tit = re.match(r'^\*{1,2}([^:*]+)\*{1,2}', cabecalho)
+                    if match_tit:
+                        t_extraido = limpar_markdown(match_tit.group(1)).strip()
+                        if len(f"{contexto_item}: {t_extraido}") <= 45:
+                            sub_tit = f"{contexto_item}: {t_extraido}"
+                        else:
+                            sub_tit = encurtar_no_limite_de_palavra(t_extraido, 45)
+                    else:
+                        sub_tit = encurtar_no_limite_de_palavra(contexto_item, 45)
+
+                    filhos_limpos = []
+                    for f in filhos:
+                        f_l = limpar_markdown(f).rstrip(';.')
+                        f_l = re.sub(r'^(?:[-*+]|\d+[\.\)]|[a-zA-Z][\.\)])\s+', '', f_l).strip()
+                        if f_l:
+                            filhos_limpos.append(f_l)
+
+                    if not filhos_limpos:
+                        continue
+
+                    sintese_itens = [f"{i+1}) {f_item}" for i, f_item in enumerate(filhos_limpos)]
+                    texto_sintese = f"{intro_limpo}: {'; '.join(sintese_itens)}."
+
+                    if len(texto_sintese) <= self.max_chars + 40:
+                        self.adicionar_card(assunto, subtema, sub_tit, texto_sintese, sub_origem)
+                    else:
+                        bloco_atual = []
+                        tam_atual = len(intro_limpo) + 2
+                        lotes = []
+                        for idx_f, f_item in enumerate(filhos_limpos):
+                            item_fmt = f"{idx_f+1}) {f_item}"
+                            if tam_atual + len(item_fmt) + 2 <= self.max_chars + 35:
+                                bloco_atual.append(item_fmt)
+                                tam_atual += len(item_fmt) + 2
+                            else:
+                                if bloco_atual:
+                                    lotes.append(bloco_atual)
+                                bloco_atual = [item_fmt]
+                                tam_atual = len(intro_limpo) + len(item_fmt) + 4
+                        if bloco_atual:
+                            lotes.append(bloco_atual)
+
+                        for l_idx, lote in enumerate(lotes):
+                            t_lote = f"{intro_limpo}: {'; '.join(lote)}."
+                            lote_tit = sub_tit if len(lotes) == 1 else f"{sub_tit} ({l_idx+1})"
+                            self.adicionar_card(assunto, subtema, lote_tit, t_lote, sub_origem)
+                else:
+                    # Item simples
+                    sub = cabecalho
+                    match_sub = re.match(r'^\*{1,2}([^:*]+)\*{1,2}(?:\s*[\(\[]([^:\)\]]+)[\)\]])?\s*(?::|-)\s*(.*)$', sub)
                     if match_sub:
                         sub_t = match_sub.group(1).strip()
-                        sub_e = match_sub.group(2).strip()
+                        sub_q = match_sub.group(2)
+                        sub_e = match_sub.group(3).strip()
+                        if sub_q:
+                            sub_q_l = limpar_markdown(sub_q).strip()
+                            if len(f"{sub_t} ({sub_q_l})") <= 35:
+                                sub_t = f"{sub_t} ({sub_q_l})"
                         if len(sub_t) <= 45:
                             sub_tit = f"{contexto_item}: {sub_t}" if len(f"{contexto_item}: {sub_t}") <= 45 else sub_t
                         else:
@@ -569,20 +940,29 @@ class ParserMarkdown:
                         for grp in grupos:
                             self.adicionar_card(assunto, subtema, sub_tit, grp, sub_origem)
                     else:
-                        sentencas = dividir_em_sentencas(sub, self.max_chars)
+                        sub_limpo = re.sub(r'^(?:[-*+>]|\d+[\.\)]|[a-zA-Z][\.\)])\s+', '', sub).strip()
+                        sentencas = dividir_em_sentencas(sub_limpo, self.max_chars)
                         grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
                         sub_tit = encurtar_no_limite_de_palavra(contexto_item, 45)
                         for grp in grupos:
-                            self.adicionar_card(assunto, subtema, sub_tit, grp, sub_origem)
+                            texto_final = grp
+                            if not grp.lower().startswith(contexto_item.lower()[:8]):
+                                texto_final = f"{contexto_item}: {grp}"
+                            self.adicionar_card(assunto, subtema, sub_tit, texto_final, sub_origem)
 
     def _processar_paragrafo(self, paragrafo, assunto, subtema, linha_num):
         origem = f"Linha {linha_num}"
 
-        match_inicio = re.match(r'^\*{1,2}([^:*]+)\*{1,2}\s*(?::|-)\s*(.*)$', paragrafo)
+        match_inicio = re.match(r'^\*{1,2}([^:*]+)\*{1,2}(?:\s*[\(\[]([^:\)\]]+)[\)\]])?\s*(?::|-)\s*(.*)$', paragrafo)
         if match_inicio:
-            titulo = match_inicio.group(1).strip()
-            restante = match_inicio.group(2).strip()
-            titulo = encurtar_no_limite_de_palavra(titulo, 45)
+            titulo_raw = match_inicio.group(1).strip()
+            qual_raw = match_inicio.group(2)
+            restante = match_inicio.group(3).strip()
+            if qual_raw:
+                q_limpo = limpar_markdown(qual_raw).strip()
+                if len(f"{titulo_raw} ({q_limpo})") <= 45:
+                    titulo_raw = f"{titulo_raw} ({q_limpo})"
+            titulo = encurtar_no_limite_de_palavra(titulo_raw, 45)
             sentencas = dividir_em_sentencas(restante, self.max_chars)
             grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
             for grp in grupos:
@@ -626,10 +1006,15 @@ class ParserMarkdown:
             # Caso 1: Tabela de 2 colunas (Termo x Definição)
             if len(headers) == 2:
                 titulo = f"{entidade} ({headers[1]})" if len(entidade) < 32 else entidade
-                sentencas = dividir_em_sentencas(cols_raw[1], self.max_chars)
-                grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
-                for grp in grupos:
-                    self.adicionar_card(assunto, subtema, titulo, grp, sub_origem)
+                itens_celula = re.split(r'<(?:br|BR)\s*/?>', cols_raw[1])
+                for item_c in itens_celula:
+                    item_c_limpo = item_c.strip()
+                    if not item_c_limpo:
+                        continue
+                    sentencas = dividir_em_sentencas(item_c_limpo, self.max_chars)
+                    grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
+                    for grp in grupos:
+                        self.adicionar_card(assunto, subtema, titulo, grp, sub_origem)
 
             # Caso 2: Tabela de 3 ou mais colunas
             else:

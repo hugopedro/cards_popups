@@ -1,5 +1,18 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
+Persistent(true)
+
+OnError(LogAhkError)
+OnExit(LogAhkExit)
+
+LogAhkError(err, mode) {
+    try FileAppend("Error: " . err.Message . " at " . err.Line . "`n", A_ScriptDir . "\dados\overlay.log")
+    return 1
+}
+
+LogAhkExit(reason, code) {
+    try FileAppend("Exit: " . reason . " code " . code . "`n", A_ScriptDir . "\dados\overlay.log")
+}
 
 ; ====================================================================
 ; MicroEstudo Overlay - AutoHotkey v2
@@ -211,12 +224,17 @@ CarregarProgresso() {
 
     try {
         jsonStr := FileRead(progFile, "UTF-8")
-        padrao := '`"([a-f0-9]+)`":\s*\{`"exibicoes`":\s*(\d+),\s*`"ultima`":\s*(\d+)\}'
+        padraoBloco := '`"([a-f0-9]+)`":\s*\{([^}]+)\}'
         pos := 1
-        while RegExMatch(jsonStr, padrao, &match, pos) {
+        while RegExMatch(jsonStr, padraoBloco, &match, pos) {
             cId := match[1]
-            exib := Integer(match[2])
-            ult := Integer(match[3])
+            corpo := match[2]
+            exib := 1
+            ult := 0
+            if RegExMatch(corpo, '`"exibicoes`":\s*(\d+)', &mExib)
+                exib := Integer(mExib[1])
+            if RegExMatch(corpo, '`"ultima`":\s*(\d+)', &mUlt)
+                ult := Integer(mUlt[1])
             Progresso[cId] := Map("exibicoes", exib, "ultima", ult)
             pos := match.Pos + match.Len
         }
@@ -280,7 +298,14 @@ SalvarProgresso() {
 ; --------------------------------------------------------------------
 
 CriarInterface() {
-    global OverlayGui, CtrlAssunto, CtrlTitulo, CtrlTexto, CtrlOrigem
+    global OverlayGui
+    if (!Config["click_through"]) {
+        OnMessage(0x0201, ArrastoJanelaAHK) ; WM_LBUTTONDOWN -> arrastar
+    }
+}
+
+RenderizarCard(card) {
+    global OverlayGui, Config, CustomPos, CtrlAssunto, CtrlTitulo, CtrlTexto, CtrlOrigem
 
     if (OverlayGui != "") {
         try OverlayGui.Destroy()
@@ -294,48 +319,69 @@ CriarInterface() {
     } else {
         estilos := "+AlwaysOnTop +ToolWindow -Caption +E0x08000000"
         OverlayGui := Gui(estilos, "MicroEstudoOverlay")
-        OnMessage(0x0201, ArrastoJanelaAHK) ; WM_LBUTTONDOWN -> arrastar
     }
 
     bgColor := Config["bg_color"]
     OverlayGui.BackColor := bgColor
-    OverlayGui.MarginX := 15
-    OverlayGui.MarginY := 10
+    OverlayGui.MarginX := 16
+    OverlayGui.MarginY := 12
 
     fSize := Config["font_size"]
     fSub := Max(8.5, fSize - 2.5)
     fTit := Max(12.0, fSize + 1.5)
-    wBox := Config["width"] - 30
+    wBox := Config["width"] - 32
+
+    assuntoTxt := card["assunto"]
+    if (card["subtema"] != "" && card["subtema"] != card["assunto"])
+        assuntoTxt .= "  ›  " . card["subtema"]
+
+    origemTxt := card["origem"] . "  •  ID: " . SubStr(card["id"], 1, 8)
 
     ; Cabeçalho: Assunto / Subtema e Botão de Lixeira
     if (!Config["click_through"]) {
         wBtn := 22
-        wAssunto := wBox - wBtn - 6
+        wAssunto := wBox - wBtn - 8
         OverlayGui.SetFont("s" . fSub . " bold c88A89A", "Segoe UI")
-        CtrlAssunto := OverlayGui.Add("Text", "+Disabled w" . wAssunto . " r1", "")
+        CtrlAssunto := OverlayGui.Add("Text", "+Disabled w" . wAssunto . " r1", SubStr(assuntoTxt, 1, 75))
 
         OverlayGui.SetFont("s10 bold c88A89A", "Segoe UI")
         btnLixeira := OverlayGui.Add("Text", "x+" . 4 . " yp w" . wBtn . " h18 Center +0x200 BackgroundTrans", "🗑")
         btnLixeira.OnEvent("Click", (*) => ExcluirCardAtual())
     } else {
         OverlayGui.SetFont("s" . fSub . " bold c88A89A", "Segoe UI")
-        CtrlAssunto := OverlayGui.Add("Text", "+Disabled +E0x20 w" . wBox . " r1", "")
+        CtrlAssunto := OverlayGui.Add("Text", "+Disabled +E0x20 w" . wBox . " r1", SubStr(assuntoTxt, 1, 75))
     }
 
-    ; Título em destaque
+    ; Título em destaque (permite acomodar título completo)
     OverlayGui.SetFont("s" . fTit . " bold cFFFFFF", "Segoe UI")
-    CtrlTitulo := OverlayGui.Add("Text", "xm y+3 +Disabled w" . wBox . " r1", "")
+    CtrlTitulo := OverlayGui.Add("Text", "xm y+4 +Disabled w" . wBox, card["titulo"])
 
-    ; Texto da microlição
+    ; Texto da microlição com auto-dimensionamento exato (sem corte vertical!)
     OverlayGui.SetFont("s" . fSize . " norm cE4EDE7", "Segoe UI")
-    CtrlTexto := OverlayGui.Add("Text", "xm y+3 +Disabled w" . wBox . " h85", "")
+    CtrlTexto := OverlayGui.Add("Text", "xm y+6 +Disabled w" . wBox, card["texto"])
 
-    ; Rodapé discreto com origem
+    ; Rodapé discreto com origem (sempre visível na base)
     OverlayGui.SetFont("s" . (fSub - 0.5) . " c5E7A6E", "Segoe UI")
-    CtrlOrigem := OverlayGui.Add("Text", "xm y+3 +Disabled w" . wBox . " r1", "")
+    CtrlOrigem := OverlayGui.Add("Text", "xm y+6 +Disabled w" . wBox . " r1", origemTxt)
+
+    ; Mede dimensões ideais com AutoSize
+    OverlayGui.Show("AutoSize Hide")
+    OverlayGui.GetPos(,, &gw, &gh)
+
+    ; Garante altura mínima configurada (confortável)
+    minH := Config["height"] > 0 ? Config["height"] : 150
+    if (gh < minH)
+        gh := minH
+
+    ; Posiciona a janela dinamicamente com base nas dimensões reais
+    CalcularPosicao(&x, &y, gw, gh)
+    OverlayGui.Move(x, y, gw, gh)
 
     ; Transparência suave da janela inteira
     WinSetTransparent(Config["opacity"], OverlayGui.Hwnd)
+
+    ; Exibe sem roubar foco
+    OverlayGui.Show("NoActivate")
 }
 
 CarregarPosicao() {
@@ -372,7 +418,8 @@ RedefinirPosicao() {
             FileDelete(posFile)
     }
     if (CardVisivel && OverlayGui != "") {
-        CalcularPosicao(&x, &y)
+        OverlayGui.GetPos(,, &gw, &gh)
+        CalcularPosicao(&x, &y, gw, gh)
         OverlayGui.Move(x, y)
     }
     ToolTip("Posição padrão restaurada.")
@@ -393,7 +440,7 @@ ArrastoJanelaAHK(wParam, lParam, msg, hwnd) {
     }
 }
 
-CalcularPosicao(&posX, &posY) {
+CalcularPosicao(&posX, &posY, gw := 0, gh := 0) {
     global CustomPos, Config
     if (CustomPos != "") {
         posX := CustomPos["x"]
@@ -401,8 +448,8 @@ CalcularPosicao(&posX, &posY) {
         return
     }
 
-    w := Config["width"]
-    h := Config["height"]
+    w := (gw > 0) ? gw : Config["width"]
+    h := (gh > 0) ? gh : Config["height"]
     mx := Config["margin_x"]
     my := Config["margin_y"]
     corner := StrLower(Trim(Config["corner"]))
@@ -449,8 +496,8 @@ SelecionarCard() {
     sorteio := Random(1, 100)
     novoRatio := Config["new_ratio"]
 
-    ; Se houver novos e o sorteio favorecer novos (ou se for o início)
-    if (naoVistos.Length > 0 && (sorteio <= novoRatio || Progresso.Count == 0)) {
+    ; Se houver novos e (o sorteio favorecer novos OU for o primeiro card exibido nesta sessão)
+    if (naoVistos.Length > 0 && (sorteio <= novoRatio || UltimoCardId == "" || Progresso.Count == 0)) {
         return naoVistos[1]
     }
 
@@ -481,8 +528,7 @@ SelecionarCard() {
 }
 
 ExibirProximoCard() {
-    global Cards, Progresso, UltimoCardId, CardVisivel, OverlayGui
-    global CtrlAssunto, CtrlTitulo, CtrlTexto, CtrlOrigem
+    global Cards, Progresso, UltimoCardId, CardVisivel
 
     if (EstaPausado || Cards.Length == 0)
         return
@@ -509,22 +555,10 @@ ExibirProximoCard() {
         Progresso[card["id"]]["exibicoes"] += 1
         Progresso[card["id"]]["ultima"] := tempoEpoch
     }
+    SalvarProgresso()
 
-    ; Atualizar controles da interface
-    assuntoTxt := card["assunto"]
-    if (card["subtema"] != "" && card["subtema"] != card["assunto"])
-        assuntoTxt .= "  ›  " . card["subtema"]
-
-    CtrlAssunto.Value := SubStr(assuntoTxt, 1, 65)
-    CtrlTitulo.Value := SubStr(card["titulo"], 1, 48)
-    CtrlTexto.Value := card["texto"]
-
-    origemTxt := card["origem"] . "  •  ID: " . SubStr(card["id"], 1, 8)
-    CtrlOrigem.Value := origemTxt
-
-    ; Posicionar janela sem roubar foco (NoActivate)
-    CalcularPosicao(&x, &y)
-    OverlayGui.Show("NoActivate x" . x . " y" . y . " w" . Config["width"] . " h" . Config["height"])
+    ; Renderizar interface dinamicamente ajustada ao conteúdo
+    RenderizarCard(card)
     CardVisivel := true
 
     ; Temporizador de permanência (padrão: 30 segundos)

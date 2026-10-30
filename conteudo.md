@@ -663,6 +663,7 @@ Provimento é o ato formal pelo qual se preenche um cargo público vago. A Lei n
 > Ascensão e Transferência foram declaradas inconstitucionais pelo STF: *"É inconstitucional toda modalidade de provimento que propicie ao servidor investir-se, sem prévia aprovação em concurso público destinado ao seu provimento, em cargo que não integra a carreira na qual anteriormente investido"*.
 
 #### Ciclo da Investidura: Nomeação, Posse e Exercício
+- **Momento da Investidura (Art. 7º)**: A investidura em cargo público ocorrerá com a posse (Macete do QCiano: *inveStidura = posSSe*; *noMEação = proviMEnto*).
 - **Nomeação**: Ato administrativo de convocação oficial.
 - **Posse**: Assinatura formal do termo de compromisso e apresentação de declaração pública de bens e valores.
   - Prazo da posse: **30 dias contados da publicação oficial da nomeação**.
