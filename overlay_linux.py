@@ -20,8 +20,10 @@ import atexit
 import argparse
 import configparser
 import subprocess
+import re
+import html
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any, Set, Tuple
 
 # Permitir execução headless em testes offscreen
 os.environ.setdefault("QT_LOGGING_RULES", "*.debug=false")
@@ -45,14 +47,33 @@ try:
         QColor, QPainter, QBrush, QPen, QFont, QIcon, QPixmap, QAction, QCursor
     )
     from PySide6.QtNetwork import QLocalServer, QLocalSocket
+    PYSIDE_AVAILABLE = True
 except ImportError:
-    print("[ERRO] PySide6 não foi encontrado no sistema!", file=sys.stderr)
-    print("Para executar o overlay no Linux, instale o pacote PySide6:", file=sys.stderr)
-    print("  - Fedora/RHEL:   sudo dnf install python3-pyside6", file=sys.stderr)
-    print("  - Ubuntu/Debian: sudo apt install python3-pyside6", file=sys.stderr)
-    print("  - Arch Linux:    sudo pacman -S python-pyside6", file=sys.stderr)
-    print("  - Ou via pip:    pip install PySide6", file=sys.stderr)
-    sys.exit(2)
+    PYSIDE_AVAILABLE = False
+
+    def Signal(*args, **kwargs):
+        class _DummySignal:
+            def connect(self, *a, **k): pass
+            def emit(self, *a, **k): pass
+        return _DummySignal()
+
+    class _DummyQt:
+        WindowType = type("WindowType", (), {"WindowStaysOnTopHint": 0, "FramelessWindowHint": 0, "Tool": 0, "WindowDoesNotAcceptFocus": 0, "WindowTransparentForInput": 0})
+        WidgetAttribute = type("WidgetAttribute", (), {"WA_TransparentForMouseEvents": 0, "WA_ShowWithoutActivating": 0, "WA_TranslucentBackground": 0})
+        CursorShape = type("CursorShape", (), {"OpenHandCursor": 0, "PointingHandCursor": 0, "ClosedHandCursor": 0})
+        TextElideMode = type("TextElideMode", (), {"ElideRight": 0})
+        MouseButton = type("MouseButton", (), {"LeftButton": 1})
+        GlobalColor = type("GlobalColor", (), {"transparent": 0})
+        AlignmentFlag = type("AlignmentFlag", (), {"AlignRight": 0})
+        Key = type("Key", (), {"Key_Space": 32, "Key_Return": 13, "Key_Enter": 13})
+        TextFormat = type("TextFormat", (), {"RichText": 1, "PlainText": 0})
+
+    Qt = _DummyQt()
+    QApplication = QWidget = QVBoxLayout = QHBoxLayout = QLabel = QPushButton = object
+    QSystemTrayIcon = QMenu = object
+    QTimer = QObject = QRect = QPoint = QPointF = QSize = object
+    QColor = QPainter = QBrush = QPen = QFont = QIcon = QPixmap = QAction = QCursor = object
+    QLocalServer = QLocalSocket = object
 
 
 # ====================================================================
@@ -165,7 +186,10 @@ class ConfigManager:
             "click_through": 0,
             "target_exes": "",
             "hide_when_target_inactive": 1,
-            "remember_progress": 1
+            "remember_progress": 1,
+            "cloze_enabled": 1,
+            "cloze_reveal_seconds": 4,
+            "highlight_keywords": 1
         }
         self.carregar()
 
@@ -204,6 +228,7 @@ class ConfigManager:
         self.config["min_chars"] = get_int("Conteudo", "min_chars", self.config["min_chars"], 30, 400)
         self.config["max_chars"] = get_int("Conteudo", "max_chars", self.config["max_chars"], 60, 600)
         self.config["new_ratio"] = get_int("Conteudo", "new_ratio", self.config["new_ratio"], 0, 100)
+        self.config["interleave_topics"] = get_int("Conteudo", "interleave_topics", 1, 0, 1)
         self.config["ignorar_secoes"] = get_str("Conteudo", "ignorar_secoes", self.config["ignorar_secoes"])
 
         # [Exibicao]
@@ -219,6 +244,9 @@ class ConfigManager:
         self.config["bg_color"] = get_str("Exibicao", "bg_color", self.config["bg_color"]).replace("#", "")
         self.config["show_on_start"] = get_int("Exibicao", "show_on_start", self.config["show_on_start"], 0, 1)
         self.config["click_through"] = get_int("Exibicao", "click_through", self.config["click_through"], 0, 1)
+        self.config["cloze_enabled"] = get_int("Exibicao", "cloze_enabled", self.config["cloze_enabled"], 0, 1)
+        self.config["cloze_reveal_seconds"] = get_int("Exibicao", "cloze_reveal_seconds", self.config["cloze_reveal_seconds"], 1, 60)
+        self.config["highlight_keywords"] = get_int("Exibicao", "highlight_keywords", self.config["highlight_keywords"], 0, 1)
 
         # [Contexto]
         self.config["target_exes"] = get_str("Contexto", "target_exes", self.config["target_exes"])
@@ -238,6 +266,8 @@ class CardsDeck:
         self.progresso: Dict[str, Dict[str, int]] = {}
         self.excluidos: Set[str] = set()
         self.ultimo_card_id: str = ""
+        self.ultimo_assunto: str = ""
+        self.ultimo_subtema: str = ""
         self.carregar_excluidos()
         self.carregar_progresso()
         self.carregar_cards()
@@ -396,10 +426,12 @@ class CardsDeck:
 
     def selecionar_proximo_card(self) -> Optional[Card]:
         """
-        Algoritmo de repetição espaçada:
-        - 70% novos cards em ordem sequencial de apresentação
-        - 30% revisões dos cards já vistos com menor número de exibições
-        - Evita repetir consecutivamente o mesmo card
+        Algoritmo inteligente de microestudo e repetição espaçada:
+        - Intercalação de assuntos (Interleaving): alterna entre os assuntos disponíveis
+          para evitar fadiga mental e saturação de um único tópico.
+        - 70% novos cards (distribuídos entre tópicos diferentes, preservando ordem interna).
+        - 30% revisões dos cards já vistos com menor número de exibições e vistos há mais tempo.
+        - Evita repetir consecutivamente o mesmo card, o mesmo assunto ou o mesmo subtema.
         """
         if not self.cards:
             return None
@@ -418,38 +450,57 @@ class CardsDeck:
 
         sorteio = random.randint(1, 100)
         novo_ratio = self.config_mgr.config.get("new_ratio", 70)
+        intercalar = bool(self.config_mgr.config.get("interleave_topics", 1))
 
-        # Se houver novos e (sorteio favorece novos ou ainda não temos material visto para revisar):
-        if nao_vistos and (sorteio <= novo_ratio or not ja_vistos):
-            card_escolhido = nao_vistos[0]
+        quero_novo = bool(nao_vistos and (not ja_vistos or sorteio <= novo_ratio or not self.ultimo_card_id))
+
+        ultimo_assunto = getattr(self, "ultimo_assunto", "")
+        ultimo_subtema = getattr(self, "ultimo_subtema", "")
+
+        card_escolhido: Optional[Card] = None
+
+        if quero_novo:
+            if intercalar:
+                por_assunto: Dict[str, List[Card]] = {}
+                for c in nao_vistos:
+                    por_assunto.setdefault(c.assunto, []).append(c)
+
+                assuntos_disponiveis = list(por_assunto.keys())
+                outros_assuntos = [a for a in assuntos_disponiveis if a != ultimo_assunto]
+                pool_assuntos = outros_assuntos if outros_assuntos else assuntos_disponiveis
+
+                assunto_escolhido = random.choice(pool_assuntos)
+                cards_assunto = por_assunto[assunto_escolhido]
+                card_escolhido = cards_assunto[0]
+                if len(cards_assunto) > 1 and card_escolhido.subtema == ultimo_subtema and ultimo_subtema:
+                    for cand in cards_assunto:
+                        if cand.subtema != ultimo_subtema:
+                            card_escolhido = cand
+                            break
+            else:
+                card_escolhido = nao_vistos[0]
         else:
-            # Revisão: selecionar prioritariamente entre os já vistos (ou todos, se todos já foram vistos)
-            fonte = ja_vistos if ja_vistos else self.cards
-            candidatos = [c for c in fonte if c.id != self.ultimo_card_id]
+            candidatos = [c for c in ja_vistos if c.id != self.ultimo_card_id]
             if not candidatos:
-                if nao_vistos:
-                    card_escolhido = nao_vistos[0]
-                    self.ultimo_card_id = card_escolhido.id
-                    agora = int(time.time())
-                    if card_escolhido.id not in self.progresso:
-                        self.progresso[card_escolhido.id] = {"exibicoes": 1, "ultima": agora}
-                    else:
-                        self.progresso[card_escolhido.id]["exibicoes"] += 1
-                        self.progresso[card_escolhido.id]["ultima"] = agora
-                    self.salvar_progresso()
-                    return card_escolhido
-                candidatos = fonte
+                candidatos = ja_vistos if ja_vistos else self.cards
 
-            # Menor contagem de exibições, priorizando mais antigos em caso de empate
-            card_escolhido = min(
-                candidatos,
-                key=lambda c: (
-                    self.progresso.get(c.id, {}).get("exibicoes", 0),
-                    self.progresso.get(c.id, {}).get("ultima", 0)
-                )
-            )
+            if intercalar:
+                outros = [c for c in candidatos if c.assunto != ultimo_assunto]
+                pool = outros if outros else candidatos
+            else:
+                pool = candidatos
+
+            menor_exib = min(self.progresso.get(c.id, {}).get("exibicoes", 0) for c in pool)
+            candidatos_min = [c for c in pool if self.progresso.get(c.id, {}).get("exibicoes", 0) == menor_exib]
+
+            menor_ts = min(self.progresso.get(c.id, {}).get("ultima", 0) for c in candidatos_min)
+            mais_antigos = [c for c in candidatos_min if self.progresso.get(c.id, {}).get("ultima", 0) == menor_ts]
+
+            card_escolhido = random.choice(mais_antigos)
 
         self.ultimo_card_id = card_escolhido.id
+        self.ultimo_assunto = card_escolhido.assunto
+        self.ultimo_subtema = card_escolhido.subtema
 
         # Atualizar estatísticas de progresso
         agora = int(time.time())
@@ -518,6 +569,109 @@ def criar_icone_lixeira(tamanho: int = 18) -> QIcon:
     return icon
 
 
+def gerar_html_card(
+    texto_bruto: str,
+    titulo: str,
+    em_oclusao: bool,
+    destacar_keywords: bool = True,
+    cloze_enabled: bool = True
+) -> Tuple[str, bool]:
+    """
+    Gera HTML formatado para o texto do card.
+    Suporta Cloze Deletion (Item 2) e Destaque Visual de Prazos e Vedações (Item 5).
+    Retorna uma tupla (html_formatado, teve_cloze).
+    """
+    texto_proc = texto_bruto
+    teve_cloze = False
+    alvos_cloze = []
+
+    # 1. Cloze Manual: extrai todas as tags {{...}}
+    def salvar_cloze(m):
+        nonlocal teve_cloze
+        teve_cloze = True
+        idx = len(alvos_cloze)
+        alvos_cloze.append(m.group(1).strip())
+        return f"\x03CLOZE_{idx}\x03"
+
+    texto_proc = re.sub(r"\{\{([^}]+)\}\}", salvar_cloze, texto_proc)
+
+    # 2. Cloze Inteligente para cards de conceito/definição (se não houver marcação manual)
+    if not teve_cloze and cloze_enabled:
+        tit_limpo = re.sub(r"^\d+[\.\)]\s*", "", titulo).strip()
+        m_col = re.search(r"^([^:]{3,40}):\s+(.+)$", texto_proc)
+        if m_col and not re.search(r"^(?:\*+|_+)?(?:ex|exemplo|exemplos|obs|nota|art\.?)\b", m_col.group(1).strip(), re.IGNORECASE):
+            teve_cloze = True
+            alvos_cloze.append(m_col.group(1).strip())
+            texto_proc = "\x03CLOZE_0\x03: " + m_col.group(2)
+        elif len(tit_limpo) >= 4 and re.search(rf"\b{re.escape(tit_limpo)}\b", texto_proc, re.IGNORECASE):
+            m_tit = re.search(rf"\b{re.escape(tit_limpo)}\b", texto_proc, re.IGNORECASE)
+            teve_cloze = True
+            alvos_cloze.append(m_tit.group(0))
+            texto_proc = texto_proc[:m_tit.start()] + "\x03CLOZE_0\x03" + texto_proc[m_tit.end():]
+        else:
+            m_def = re.search(r"^((?:O|A|Os|As|Um|Uma)?\s*[\w\-]+(?:\s+[\w\-]+){0,3})\s+(é|são|consiste em|compreende)\b", texto_proc, re.IGNORECASE)
+            if m_def:
+                teve_cloze = True
+                alvos_cloze.append(m_def.group(1).strip())
+                texto_proc = "\x03CLOZE_0\x03 " + m_def.group(2) + texto_proc[m_def.end():]
+
+    # 3. Destaque de Prazos e Vedações (somente fora dos clozes protegidos)
+    if destacar_keywords:
+        p_prazos = (
+            r"(?i)\b(?:\d+|(?:um|dois|três|tres|quatro|cinco|seis|sete|oito|nove|dez|quinze|vinte|"
+            r"trinta|quarenta|cinquenta|sessenta|noventa|cento e vinte))\s*"
+            r"(?:dias\s+úteis|dias|dia|meses|mês|mes|anos|ano|horas|hora|minutos|minuto)\b"
+            r"|\b(?:prazos?\s+prescriciona(?:l|is)|prazos?\s+decadencia(?:l|is)|prazos?\s+recursais?|"
+            r"quinquênio|triênio|biênio|prescrição\s+quinquenal)\b"
+        )
+        p_vedacoes = (
+            r"(?i)\b(?:vedado|vedada|vedados|vedadas|vedação|vedações|proibido|proibida|proibidos|"
+            r"proibidas|proibição|proibições|salvo\s+se|salvo|não\s+cabe|nao\s+cabe|não\s+caberá|"
+            r"não\s+cabem|nulo|nula|nulos|nulas|nulidade|nulidades|inconstitucional|inconstitucionais|"
+            r"inconstitucionalidade|exceção|exceções|excecao|excecoes|defeso|defesa|indeferimento|"
+            r"indeferido|indeferida|imprescritível|imprescritibilidade|indelegável|indelegabilidade|"
+            r"irrenunciável|irrenunciabilidade|inafastável)\b"
+        )
+        texto_proc = re.sub(p_prazos, lambda m: f"\x01PRAZO:{m.group(0)}\x02", texto_proc)
+        texto_proc = re.sub(p_vedacoes, lambda m: f"\x01VEDACAO:{m.group(0)}\x02", texto_proc)
+
+    # 4. Substituição das tags de Cloze pelo marcador final
+    if teve_cloze:
+        for idx, termo in enumerate(alvos_cloze):
+            ph = f"\x03CLOZE_{idx}\x03"
+            if em_oclusao:
+                cloze_sub = "\x01CLOZE_PH\x02"
+            else:
+                cloze_sub = f"\x01CLOZE_REV:{termo}\x02"
+            texto_proc = texto_proc.replace(ph, cloze_sub)
+
+    # 5. Montagem do HTML final com escaping seguro
+    partes = []
+    pos = 0
+    tag_pattern = re.compile(r"\x01([A-Z_]+)(?::([^\x02]*))?\x02")
+    for m in tag_pattern.finditer(texto_proc):
+        pre = texto_proc[pos:m.start()]
+        if pre:
+            partes.append(html.escape(pre).replace("\n", "<br>"))
+        tag_tipo = m.group(1)
+        tag_val = m.group(2) or ""
+        if tag_tipo == "CLOZE_PH":
+            partes.append('<span style="color: #7EC8E3; font-weight: bold; background-color: rgba(126, 200, 227, 0.2); border-radius: 3px; padding: 0 4px;">[...]</span>')
+        elif tag_tipo == "CLOZE_REV":
+            partes.append(f'<span style="color: #7EC8E3; font-weight: bold; text-decoration: underline;">{html.escape(tag_val)}</span>')
+        elif tag_tipo == "PRAZO":
+            partes.append(f'<span style="color: #FFD266; font-weight: bold;">{html.escape(tag_val)}</span>')
+        elif tag_tipo == "VEDACAO":
+            partes.append(f'<span style="color: #FF7A7A; font-weight: bold;">{html.escape(tag_val)}</span>')
+        pos = m.end()
+
+    resto = texto_proc[pos:]
+    if resto:
+        partes.append(html.escape(resto).replace("\n", "<br>"))
+
+    return "".join(partes), teve_cloze
+
+
 class OverlayWindow(QWidget):
     """
     Janela translúcida, flutuante, Always-On-Top e sem roubo de foco.
@@ -567,6 +721,14 @@ class OverlayWindow(QWidget):
         self._custom_pos: Optional[QPoint] = None
         self._card_assunto_completo = ""
         self._card_titulo_completo = ""
+        self._esta_em_oclusao = False
+        self._card_atual: Optional[Card] = None
+
+        if PYSIDE_AVAILABLE:
+            self.timer_cloze = QTimer(self)
+            self.timer_cloze.setSingleShot(True)
+            self.timer_cloze.timeout.connect(self.revelar_cloze)
+
         self.carregar_posicao()
 
         self.layout_principal = QVBoxLayout(self)
@@ -596,13 +758,15 @@ class OverlayWindow(QWidget):
         self.layout_header.addWidget(self.lbl_assunto, 1)
         self.layout_header.addWidget(self.btn_lixeira, 0, Qt.AlignmentFlag.AlignRight)
 
-        # Rótulo de Título em destaque
+        # Rótulo de Título em destaque (permite quebras de linha dinâmicas sem truncamento)
         self.lbl_titulo = QLabel("")
+        self.lbl_titulo.setWordWrap(True)
         self.lbl_titulo.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         # Rótulo do Texto explicativo principal
         self.lbl_texto = QLabel("")
         self.lbl_texto.setWordWrap(True)
+        self.lbl_texto.setTextFormat(Qt.TextFormat.RichText)
         self.lbl_texto.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         # Rótulo do Rodapé / Origem
@@ -711,6 +875,8 @@ class OverlayWindow(QWidget):
         if self.click_through:
             event.ignore()
             return
+        if getattr(self, "_esta_em_oclusao", False):
+            self.revelar_cloze()
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_active = True
             self._drag_moved = False
@@ -732,6 +898,19 @@ class OverlayWindow(QWidget):
             event.accept()
         else:
             event.ignore()
+
+    def enterEvent(self, event) -> None:
+        if getattr(self, "_esta_em_oclusao", False):
+            self.revelar_cloze()
+        super().enterEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if getattr(self, "_esta_em_oclusao", False):
+                self.revelar_cloze()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def moveEvent(self, event) -> None:
         super().moveEvent(event)
@@ -845,9 +1024,7 @@ class OverlayWindow(QWidget):
 
         titulo_completo = getattr(self, "_card_titulo_completo", "")
         if titulo_completo:
-            w_disponivel_corpo = max(80, w - margins.left() - margins.right())
-            fm_tit = self.lbl_titulo.fontMetrics()
-            self.lbl_titulo.setText(fm_tit.elidedText(titulo_completo, Qt.TextElideMode.ElideRight, w_disponivel_corpo))
+            self.lbl_titulo.setText(titulo_completo)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -941,6 +1118,7 @@ class OverlayWindow(QWidget):
         self.atualizar_textos_elididos()
 
     def exibir_card(self, card: Card) -> None:
+        self._card_atual = card
         assunto_txt = card.assunto
         if card.subtema and card.subtema != card.assunto:
             assunto_txt += f"  ›  {card.subtema}"
@@ -950,11 +1128,50 @@ class OverlayWindow(QWidget):
 
         self.lbl_assunto.setToolTip(assunto_txt)
         self.lbl_titulo.setToolTip(card.titulo)
-        self.lbl_texto.setText(card.texto)
         self.lbl_origem.setText(f"{card.origem}  •  ID: {card.id[:8]}")
+
+        cfg = self.config_mgr.config
+        cloze_enabled = bool(cfg.get("cloze_enabled", 1))
+        destacar_kw = bool(cfg.get("highlight_keywords", 1))
+        reveal_sec = cfg.get("cloze_reveal_seconds", 4)
+
+        html_txt, teve_cloze = gerar_html_card(
+            card.texto, card.titulo,
+            em_oclusao=cloze_enabled,
+            destacar_keywords=destacar_kw,
+            cloze_enabled=cloze_enabled
+        )
+        self._esta_em_oclusao = teve_cloze and cloze_enabled
+        self.lbl_texto.setText(html_txt)
+
+        if self._esta_em_oclusao and hasattr(self, "timer_cloze") and hasattr(self.timer_cloze, "start"):
+            self.timer_cloze.start(reveal_sec * 1000)
+        elif hasattr(self, "timer_cloze") and hasattr(self.timer_cloze, "stop"):
+            self.timer_cloze.stop()
 
         self.reposicionar()
         self.show()
+
+    def revelar_cloze(self) -> None:
+        """Revela termos oclusos ativos no card atual."""
+        if not getattr(self, "_esta_em_oclusao", False) or not getattr(self, "_card_atual", None):
+            return
+        if hasattr(self, "timer_cloze") and hasattr(self.timer_cloze, "stop"):
+            self.timer_cloze.stop()
+        self._esta_em_oclusao = False
+
+        cfg = self.config_mgr.config
+        destacar_kw = bool(cfg.get("highlight_keywords", 1))
+        cloze_enabled = bool(cfg.get("cloze_enabled", 1))
+
+        html_txt, _ = gerar_html_card(
+            self._card_atual.texto, self._card_atual.titulo,
+            em_oclusao=False,
+            destacar_keywords=destacar_kw,
+            cloze_enabled=cloze_enabled
+        )
+        self.lbl_texto.setText(html_txt)
+        self.reposicionar()
 
 
 # ====================================================================
@@ -1040,6 +1257,9 @@ class OverlayController(QObject):
 
         acao_proximo = menu.addAction("⏭️  Próximo Card")
         acao_proximo.triggered.connect(self.proximo_card_manual)
+
+        acao_revelar = menu.addAction("💡  Revelar Termo Oculto (Espaço)")
+        acao_revelar.triggered.connect(self.window.revelar_cloze)
 
         acao_excluir = menu.addAction("🗑️  Excluir Card Atual")
         acao_excluir.triggered.connect(self.excluir_card_atual)
@@ -1128,6 +1348,9 @@ class OverlayController(QObject):
         if cmd in ("next", "proximo", "p"):
             self.proximo_card_manual()
             return "OK: proximo card exibido"
+        elif cmd in ("reveal", "revelar", "cloze", "space"):
+            self.window.revelar_cloze()
+            return "OK: termo ocluso revelado"
         elif cmd in ("delete", "excluir", "discard", "lixeira", "x"):
             sucesso = self.excluir_card_atual()
             return "OK: card excluido do baralho" if sucesso else "AVISO: nenhum card ativo para excluir"
@@ -1152,7 +1375,7 @@ class OverlayController(QObject):
             QTimer.singleShot(100, self.sair_aplicativo)
             return "OK: encerrando overlay"
         else:
-            return f"ERRO: comando desconhecido '{cmd}'. Comandos validos: next, delete, reset-pos, reset-excluded, pause, hide, reload, status, quit"
+            return f"ERRO: comando desconhecido '{cmd}'. Comandos validos: next, reveal, delete, reset-pos, reset-excluded, pause, hide, reload, status, quit"
 
     def excluir_card_atual(self) -> bool:
         if not self.card_atual:
@@ -1180,6 +1403,7 @@ class OverlayController(QObject):
         dados = {
             "status": "pausado" if self.esta_pausado else "ativo",
             "card_visivel": self.card_visivel,
+            "cloze_ativo": getattr(self.window, "_esta_em_oclusao", False),
             "total_cards": total,
             "cards_vistos": vistos,
             "cards_excluidos": len(self.deck.excluidos),
@@ -1387,6 +1611,8 @@ def iniciar_leitor_terminal(controller: OverlayController) -> None:
                     if ch == "\x03" or ch_lower == "q":  # Ctrl+C ou q
                         controller.sinal_comando.emit("quit")
                         break
+                    elif ch == " ":
+                        controller.sinal_comando.emit("reveal")
                     elif ch_lower == "p":
                         controller.sinal_comando.emit("pause")
                     elif ch_lower == "n":
@@ -1418,8 +1644,9 @@ def main():
     parser = argparse.ArgumentParser(description="MicroEstudo Overlay - Linux")
     parser.add_argument("--config", default="config.ini", help="Caminho do arquivo config.ini")
     parser.add_argument("--conteudo", "-f", help="Caminho do arquivo Markdown de estudo (ex: conteudo.md)")
-    parser.add_argument("--command", "-c", choices=["next", "pause", "hide", "reload", "status", "quit", "delete", "reset-pos", "reset-excluded"], help="Envia comando para instância ativa")
+    parser.add_argument("--command", "-c", choices=["next", "reveal", "pause", "hide", "reload", "status", "quit", "delete", "reset-pos", "reset-excluded"], help="Envia comando para instância ativa")
     parser.add_argument("--next", "-n", action="store_true", help="Avança para o próximo card")
+    parser.add_argument("--reveal", "-b", action="store_true", help="Revela termos oclusos (Active Recall) imediatamente")
     parser.add_argument("--exclude", "-x", action="store_true", help="Descarta/exclui o card atual permanentemente")
     parser.add_argument("--reset-pos", action="store_true", help="Restaura a posição padrão do overlay na tela")
     parser.add_argument("--reset-excluded", action="store_true", help="Restaura todos os cards previamente descartados")
@@ -1438,6 +1665,8 @@ def main():
         comando_solicitado = args.command
     elif args.next:
         comando_solicitado = "next"
+    elif args.reveal:
+        comando_solicitado = "reveal"
     elif args.exclude:
         comando_solicitado = "delete"
     elif args.reset_pos:
@@ -1473,6 +1702,15 @@ def main():
         sys.exit(0)
 
     # Iniciar aplicação gráfica Qt
+    if not PYSIDE_AVAILABLE:
+        print("[ERRO] PySide6 não foi encontrado no sistema!", file=sys.stderr)
+        print("Para executar o overlay no Linux, instale o pacote PySide6:", file=sys.stderr)
+        print("  - Fedora/RHEL:   sudo dnf install python3-pyside6", file=sys.stderr)
+        print("  - Ubuntu/Debian: sudo apt install python3-pyside6", file=sys.stderr)
+        print("  - Arch Linux:    sudo pacman -S python-pyside6", file=sys.stderr)
+        print("  - Ou via pip:    pip install PySide6", file=sys.stderr)
+        sys.exit(2)
+
     app_args = sys.argv[:1]
     if args.offscreen or os.environ.get("QT_QPA_PLATFORM") == "offscreen":
         app_args.extend(["-platform", "offscreen"])
@@ -1518,11 +1756,12 @@ def main():
     print(f"[+] Posicionamento: {config_mgr.config.get('corner')} (Dimensões: {config_mgr.config.get('width')}x{config_mgr.config.get('height')})")
     print(f"[+] Socket de controle IPC: {obter_socket_path()}")
     print("\n[+] Controles rápidos disponíveis:")
-    print("    No Terminal interativo:  [p] Pausa  |  [n] Próximo  |  [x] Excluir card  |  [c] Resetar posição  |  [h] Ocultar  |  [r] Recarregar  |  [q] Sair")
+    print("    No Terminal interativo:  [Espaço] Revelar  |  [p] Pausa  |  [n] Próximo  |  [x] Excluir card  |  [c] Resetar posição  |  [h] Ocultar  |  [r] Recarregar  |  [q] Sair")
     print("    Interação com o Mouse:   Arraste o card livremente na tela com o mouse")
+    print("                             Clique ou passe o mouse sobre o card para revelar termos oclusos")
     print("                             Clique no botão 🗑️ para descartar cards inúteis")
     print("    Na Bandeja do Sistema:   Clique com botão direito no ícone de estudo para acessar o menu")
-    print("    Via Linha de Comando:    ./iniciar.sh --next  |  --exclude  |  --reset-pos  |  --pause  |  --quit")
+    print("    Via Linha de Comando:    ./iniciar.sh --next  |  --reveal  |  --exclude  |  --reset-pos  |  --pause  |  --quit")
     print("=" * 68)
 
     iniciar_leitor_terminal(controller)

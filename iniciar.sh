@@ -27,6 +27,7 @@ exibir_ajuda() {
     echo ""
     echo "Opções de Controle (para enviar à instância em execução):"
     echo "  -n, --next                  Avança para o próximo card imediatamente"
+    echo "  -b, --reveal                Revela termos oclusos (Active Recall) do card atual"
     echo "  -x, --exclude               Descarta/exclui o card atual permanentemente"
     echo "  --reset-pos                 Restaura a posição padrão do overlay no canto da tela"
     echo "  --reset-excluded            Restaura todos os cards previamente descartados"
@@ -41,13 +42,14 @@ exibir_ajuda() {
     echo "  ./iniciar.sh --daemon                       # Inicia em segundo plano"
     echo "  ./iniciar.sh --conteudo conteudo_modelo.md  # Inicia com material específico"
     echo "  ./iniciar.sh --next                         # Avança o card via atalho/linha de comando"
+    echo "  ./iniciar.sh --reveal                       # Revela termos oclusos imediatamente"
     echo "  ./iniciar.sh --exclude                      # Descarta card inútil imediatamente"
     echo "  ./iniciar.sh --reset-pos                    # Restaura posição padrão do card"
     echo "  ./iniciar.sh --pause                        # Pausa/retoma o aplicativo"
 }
 
 # 1. Tratamento imediato de comandos de controle IPC
-if [[ "$1" =~ ^(-n|--next|-x|--exclude|--reset-pos|--reset-excluded|-p|--pause|--hide|-r|--reload|-s|--status|-q|--quit)$ ]]; then
+if [[ "$1" =~ ^(-n|--next|-b|--reveal|-x|--exclude|--reset-pos|--reset-excluded|-p|--pause|--hide|-r|--reload|-s|--status|-q|--quit)$ ]]; then
     if ! command -v python3 >/dev/null 2>&1; then
         echo "[ERRO] Python 3 não foi encontrado no sistema!" >&2
         exit 1

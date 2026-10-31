@@ -49,6 +49,17 @@ def limpar_markdown(texto):
     if not texto:
         return ""
 
+    # Proteger tags de oclusão {{...}} para não sofrerem remoção indevida
+    clozes = []
+    def salvar_cloze(m):
+        idx = len(clozes)
+        conteudo_cloze = m.group(1).strip()
+        conteudo_cloze = re.sub(r'[*_`~]', '', conteudo_cloze)
+        clozes.append(conteudo_cloze)
+        return f"\x00CLOZE{idx}TOKEN\x00"
+
+    texto = re.sub(r'\{\{([^}]+)\}\}', salvar_cloze, texto)
+
     # Links e imagens
     texto = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', texto)
     texto = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', texto)
@@ -78,6 +89,11 @@ def limpar_markdown(texto):
 
     # Normalizar espaços
     texto = re.sub(r'[ \t]+', ' ', texto)
+
+    # Restaurar tags de oclusão {{...}}
+    for idx, c_val in enumerate(clozes):
+        texto = texto.replace(f"\x00CLOZE{idx}TOKEN\x00", f"{{{{{c_val}}}}}")
+
     return texto.strip()
 
 
@@ -125,9 +141,10 @@ def quebrar_em_limite_de_palavra(texto, max_chars):
             pos = texto.rfind(pont, 0, idx)
             if pos < 45:
                 break
-            # Verifica balanceamento de parênteses
+            # Verifica balanceamento de parênteses e chaves de oclusão {{...}}
             abertos = texto[:pos].count('(') - texto[:pos].count(')')
-            if abertos <= 0:
+            abertos_chaves = texto[:pos].count('{{') - texto[:pos].count('}}')
+            if abertos <= 0 and abertos_chaves <= 0:
                 # Se for vírgula seguida de conectivo que gera oração subordinada dependente, não quebra aqui
                 if pont.strip() == ',':
                     resto = texto[pos + len(pont):]
@@ -140,7 +157,7 @@ def quebrar_em_limite_de_palavra(texto, max_chars):
         if melhor_pos != -1:
             break
 
-    # 2. Se não houver pontuação intermediária fora de parênteses, quebra no último espaço fora de parênteses
+    # 2. Se não houver pontuação intermediária fora de parênteses, quebra no último espaço fora de parênteses e chaves
     if melhor_pos == -1:
         idx = max_chars
         while idx > 40:
@@ -148,27 +165,61 @@ def quebrar_em_limite_de_palavra(texto, max_chars):
             if pos < 40:
                 break
             abertos = texto[:pos].count('(') - texto[:pos].count(')')
-            if abertos <= 0:
+            abertos_chaves = texto[:pos].count('{{') - texto[:pos].count('}}')
+            if abertos <= 0 and abertos_chaves <= 0:
                 melhor_pos = pos
                 break
             idx = pos
 
-    # 3. Se ainda assim não encontrou, busca último espaço antes de max_chars
+    # 3. Se ainda assim não encontrou, busca último espaço antes de max_chars fora de chaves
     if melhor_pos == -1:
-        pos = texto.rfind(' ', 0, max_chars)
-        if pos >= 40:
-            melhor_pos = pos
+        idx = max_chars
+        while idx >= 40:
+            pos = texto.rfind(' ', 0, idx)
+            if pos < 40:
+                break
+            abertos_chaves = texto[:pos].count('{{') - texto[:pos].count('}}')
+            if abertos_chaves <= 0:
+                melhor_pos = pos
+                break
+            idx = pos
 
-    # 4. Fallback: procura o próximo espaço logo após max_chars
+    # 4. Fallback: procura o próximo espaço logo após max_chars fora de chaves e parênteses
     if melhor_pos == -1:
-        pos = texto.find(' ', max_chars)
-        if pos != -1:
-            melhor_pos = pos
-        else:
-            return [texto]
+        idx_busca = max_chars
+        while idx_busca < len(texto):
+            pos = texto.find(' ', idx_busca)
+            if pos == -1:
+                break
+            abertos = texto[:pos].count('(') - texto[:pos].count(')')
+            abertos_chaves = texto[:pos].count('{{') - texto[:pos].count('}}')
+            if abertos <= 0 and abertos_chaves <= 0:
+                melhor_pos = pos
+                break
+            idx_busca = pos + 1
+
+    # 5. Se não encontrou após max_chars, busca qualquer espaço antes de max_chars fora de chaves
+    if melhor_pos == -1:
+        idx_busca = max_chars
+        while idx_busca > 0:
+            pos = texto.rfind(' ', 0, idx_busca)
+            if pos == -1:
+                break
+            abertos_chaves = texto[:pos].count('{{') - texto[:pos].count('}}')
+            if abertos_chaves <= 0:
+                melhor_pos = pos
+                break
+            idx_busca = pos
+
+    if melhor_pos == -1:
+        return [texto]
 
     parte1 = texto[:melhor_pos].strip().rstrip(' ,;:-–—(')
     parte2 = texto[melhor_pos:].strip().lstrip(' ,;:-–—)')
+
+    # Se qualquer das partes ficaria com chaves desbalanceadas, não quebra
+    if (parte1.count('{{') != parte1.count('}}')) or (parte2.count('{{') != parte2.count('}}')):
+        return [texto]
 
     parte2_limpa = re.sub(r'^(?:e|ou|de|que|com|para)\s+', '', parte2, flags=re.IGNORECASE).lstrip(',;:—– ')
     if re.search(padroes_subordinados, parte2_limpa, flags=re.IGNORECASE):
@@ -217,6 +268,50 @@ def encurtar_no_limite_de_palavra(texto: str, max_chars: int) -> str:
 
 
 
+def detectar_cloze_inteligente(texto: str, titulo: str = ""):
+    """
+    Identifica de forma heurística e segura termos-chave para Active Recall em cards
+    de conceito/definição quando não há marcação manual com {{...}}.
+    Retorna uma tupla (termo_alvo, texto_com_marcador).
+    Se não for um card com padrão evidente de definição, retorna (None, texto).
+    """
+    texto = texto.strip()
+    if "{{" in texto and "}}" in texto:
+        termos = re.findall(r'\{\{([^}]+)\}\}', texto)
+        if termos:
+            texto_oculto = re.sub(r'\{\{[^}]+\}\}', '[...]', texto)
+            termo_ret = ", ".join(t.strip() for t in termos) if len(termos) > 1 else termos[0].strip()
+            return termo_ret, texto_oculto
+
+    # Padrão A: Termo antes de dois-pontos inicial (ex: "Moralidade: A conduta...")
+    m_colon = re.match(r'^([^:]{3,40}):\s+(.+)$', texto)
+    if m_colon:
+        termo = m_colon.group(1).strip()
+        if not re.match(r'^(?:\*+|_+)?(?:ex|exemplo|exemplos|obs|nota|art\.?)\b', termo, flags=re.IGNORECASE):
+            return termo, f"[...]: {m_colon.group(2)}"
+
+    # Padrão B: Título contido no texto (ex: título="Princípio da Eficiência" e texto contendo o termo)
+    tit_limpo = re.sub(r'^\d+[\.\)]\s*', '', titulo).strip() if titulo else ""
+    if len(tit_limpo) >= 4:
+        padrao_tit = r'\b(' + re.escape(tit_limpo) + r')\b'
+        m_tit = re.search(padrao_tit, texto, flags=re.IGNORECASE)
+        if m_tit:
+            termo = m_tit.group(1)
+            novo_texto = texto[:m_tit.start()] + "[...]" + texto[m_tit.end():]
+            return termo, novo_texto
+
+    # Padrão C: Definições diretas com verbo de ligação: "<Sujeito> (é|são|consiste em|compreende)"
+    m_def = re.match(r'^((?:O|A|Os|As|Um|Uma)?\s*[\w\-]+(?:\s+[\w\-]+){0,3})\s+(é|são|consiste em|compreende)\b', texto, flags=re.IGNORECASE)
+    if m_def:
+        termo = m_def.group(1).strip()
+        verbo = m_def.group(2)
+        resto = texto[m_def.end():]
+        return termo, f"[...] {verbo}{resto}"
+
+    return None, texto
+
+
+
 def dividir_em_sentencas(texto, max_chars=220):
     """
     Divide texto em sentenças respeitando abreviações doutrinárias e pontuação jurídica.
@@ -246,11 +341,18 @@ def dividir_em_sentencas(texto, max_chars=220):
     for padrao, subst in abrevs:
         temp = re.sub(padrao, subst, temp, flags=re.IGNORECASE)
 
+    # Proteger pontuações internas a tags de oclusão {{...}} para não quebrar a tag ao meio
+    def proteger_cloze(m):
+        conteudo = m.group(1).replace('.', '##DOT##').replace('!', '##EXCL##').replace('?', '##QUES##')
+        return f"{{{{{conteudo}}}}}"
+    temp = re.sub(r'\{\{([^}]+)\}\}', proteger_cloze, temp)
+
     partes = re.split(r'(?<=[.!?])\s+', temp)
 
     resultado = []
     for parte in partes:
         p = parte.replace('@@', '.')
+        p = p.replace('##DOT##', '.').replace('##EXCL##', '!').replace('##QUES##', '?')
         p = re.sub(r'^[-*+>]\s+', '', p).strip()
         if p:
             p_limpo = limpar_markdown(p)
@@ -347,18 +449,17 @@ class ParserMarkdown:
         if not texto_limpo.endswith(('.', '!', '?')):
             texto_limpo += '.'
 
-        # Ajuste de tamanho de assunto, subtema e título para evitar estouro no overlay
-        assunto_fmt = encurtar_no_limite_de_palavra(limpar_markdown(assunto), 65)
+        # Assunto, subtema e título preservados integralmente sem truncamento por reticências
+        assunto_fmt = limpar_markdown(assunto).strip()
 
-        subtema_fmt = limpar_markdown(subtema)
-        subtema_fmt = re.sub(r'^\d+[\.\)]\s+', '', subtema_fmt)
-        if len(subtema_fmt) > 65:
-            partes_sub = [p.strip() for p in subtema_fmt.split("›") if p.strip()]
-            subtema_fmt = partes_sub[-1] if partes_sub else subtema_fmt
-            subtema_fmt = encurtar_no_limite_de_palavra(subtema_fmt, 65)
+        subtema_fmt = limpar_markdown(subtema).strip()
+        subtema_fmt = re.sub(r'^\d+(?:\.\d+)*(?:[\.\)]\s*|\s+)', '', subtema_fmt).strip()
 
-        titulo_fmt = re.sub(r'^\d+[\.\)]\s+', '', limpar_markdown(titulo))
-        titulo_fmt = encurtar_no_limite_de_palavra(titulo_fmt, 48)
+        titulo_fmt = re.sub(r'^\d+(?:\.\d+)*(?:[\.\)]\s*|\s+)', '', limpar_markdown(titulo)).strip()
+
+        assunto_fmt = re.sub(r'\{\{|\}\}', '', assunto_fmt).strip()
+        subtema_fmt = re.sub(r'\{\{|\}\}', '', subtema_fmt).strip()
+        titulo_fmt = re.sub(r'\{\{|\}\}', '', titulo_fmt).strip()
 
         cid = gerar_id(assunto_fmt, subtema_fmt, titulo_fmt, texto_limpo)
         card = Card(
@@ -539,8 +640,8 @@ class ParserMarkdown:
 
                     if len(itens_consecutivos) >= 2:
                         subtema_limpo = limpar_markdown(subtema_atual.split('›')[-1].strip())
-                        subtema_limpo = re.sub(r'^\d+[\.\)]\s+', '', subtema_limpo)
-                        tit_sint = encurtar_no_limite_de_palavra(subtema_limpo, 45)
+                        subtema_limpo = re.sub(r'^\d+(?:\.\d+)*(?:[\.\)]\s*|\s+)', '', subtema_limpo)
+                        tit_sint = subtema_limpo
 
                         itens_limpos = [limpar_markdown(it).rstrip(';.') for it in itens_consecutivos if it]
                         bloco_itens = []
@@ -667,7 +768,7 @@ class ParserMarkdown:
                     k += 1
 
                 paragrafo_limpo = limpar_markdown(paragrafo).rstrip(':')
-                tit_sint = encurtar_no_limite_de_palavra(re.sub(r'^\d+[\.\)]\s+', '', subtema_atual.split('›')[-1].strip()), 45)
+                tit_sint = re.sub(r'^\d+(?:\.\d+)*(?:[\.\)]\s*|\s+)', '', subtema_atual.split('›')[-1].strip())
 
                 itens_com_def_longa = []
                 for it in itens_lista_intro:
@@ -727,7 +828,7 @@ class ParserMarkdown:
         if match_termo:
             rotulo = match_termo.group(1).strip()
             corpo = match_termo.group(2).strip()
-            titulo = encurtar_no_limite_de_palavra(rotulo, 45)
+            titulo = rotulo
             sentencas = dividir_em_sentencas(corpo, self.max_chars)
             grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
             for grp in grupos:
@@ -752,9 +853,9 @@ class ParserMarkdown:
             titulo_base = termo
             if qualificador:
                 qual_limpo = limpar_markdown(qualificador).strip()
-                if len(f"{termo} ({qual_limpo})") <= 45:
+                if qual_limpo:
                     titulo_base = f"{termo} ({qual_limpo})"
-            titulo = encurtar_no_limite_de_palavra(titulo_base, 45)
+            titulo = titulo_base
 
             if explicacao and not explicacao.endswith(':'):
                 sentencas = dividir_em_sentencas(explicacao, self.max_chars)
@@ -772,7 +873,7 @@ class ParserMarkdown:
                 sentencas = dividir_em_sentencas(item_texto, self.max_chars)
                 grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
                 subtema_limpo = limpar_markdown(subtema.split('›')[-1].strip())
-                titulo = encurtar_no_limite_de_palavra(subtema_limpo, 45)
+                titulo = subtema_limpo
                 for grp in grupos:
                     texto_final = grp
                     if not grp.lower().startswith(subtema_limpo.lower()[:8]):
@@ -808,7 +909,7 @@ class ParserMarkdown:
 
                 if len(itens_com_def_longa) >= 2 and len(itens_com_def_longa) >= len(sub_itens) // 2:
                     termos = [limpar_markdown(t[0]) for t in itens_com_def_longa]
-                    tit_sint = encurtar_no_limite_de_palavra(premissa_pai, 45)
+                    tit_sint = premissa_pai
                     sintese = f"{premissa_pai}: " + "; ".join([f"{idx+1}) {t}" for idx, t in enumerate(termos)]) + "."
                     if len(sintese) <= self.max_chars + 40:
                         self.adicionar_card(assunto, subtema, tit_sint, sintese, origem)
@@ -825,7 +926,7 @@ class ParserMarkdown:
                             filhos_limpos.append(f_l)
 
                     if filhos_limpos:
-                        tit_sint = encurtar_no_limite_de_palavra(premissa_pai, 45)
+                        tit_sint = premissa_pai
                         bloco_atual = []
                         tam_atual = len(premissa_pai) + 2
                         lotes = []
@@ -875,12 +976,9 @@ class ParserMarkdown:
                     match_tit = re.match(r'^\*{1,2}([^:*]+)\*{1,2}', cabecalho)
                     if match_tit:
                         t_extraido = limpar_markdown(match_tit.group(1)).strip()
-                        if len(f"{contexto_item}: {t_extraido}") <= 45:
-                            sub_tit = f"{contexto_item}: {t_extraido}"
-                        else:
-                            sub_tit = encurtar_no_limite_de_palavra(t_extraido, 45)
+                        sub_tit = f"{contexto_item}: {t_extraido}" if contexto_item else t_extraido
                     else:
-                        sub_tit = encurtar_no_limite_de_palavra(contexto_item, 45)
+                        sub_tit = contexto_item
 
                     filhos_limpos = []
                     for f in filhos:
@@ -928,12 +1026,9 @@ class ParserMarkdown:
                         sub_e = match_sub.group(3).strip()
                         if sub_q:
                             sub_q_l = limpar_markdown(sub_q).strip()
-                            if len(f"{sub_t} ({sub_q_l})") <= 35:
+                            if sub_q_l:
                                 sub_t = f"{sub_t} ({sub_q_l})"
-                        if len(sub_t) <= 45:
-                            sub_tit = f"{contexto_item}: {sub_t}" if len(f"{contexto_item}: {sub_t}") <= 45 else sub_t
-                        else:
-                            sub_tit = encurtar_no_limite_de_palavra(sub_t, 45)
+                        sub_tit = f"{contexto_item}: {sub_t}" if contexto_item else sub_t
 
                         sentencas = dividir_em_sentencas(sub_e, self.max_chars)
                         grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
@@ -943,7 +1038,7 @@ class ParserMarkdown:
                         sub_limpo = re.sub(r'^(?:[-*+>]|\d+[\.\)]|[a-zA-Z][\.\)])\s+', '', sub).strip()
                         sentencas = dividir_em_sentencas(sub_limpo, self.max_chars)
                         grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
-                        sub_tit = encurtar_no_limite_de_palavra(contexto_item, 45)
+                        sub_tit = contexto_item
                         for grp in grupos:
                             texto_final = grp
                             if not grp.lower().startswith(contexto_item.lower()[:8]):
@@ -960,9 +1055,9 @@ class ParserMarkdown:
             restante = match_inicio.group(3).strip()
             if qual_raw:
                 q_limpo = limpar_markdown(qual_raw).strip()
-                if len(f"{titulo_raw} ({q_limpo})") <= 45:
+                if q_limpo:
                     titulo_raw = f"{titulo_raw} ({q_limpo})"
-            titulo = encurtar_no_limite_de_palavra(titulo_raw, 45)
+            titulo = titulo_raw
             sentencas = dividir_em_sentencas(restante, self.max_chars)
             grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
             for grp in grupos:
@@ -971,7 +1066,7 @@ class ParserMarkdown:
 
         sentencas = dividir_em_sentencas(paragrafo, self.max_chars)
         grupos = agrupar_sentencas(sentencas, self.min_chars, self.max_chars)
-        titulo = encurtar_no_limite_de_palavra(subtema.split('›')[-1].strip(), 45)
+        titulo = subtema.split('›')[-1].strip()
         for grp in grupos:
             self.adicionar_card(assunto, subtema, titulo, grp, origem)
 

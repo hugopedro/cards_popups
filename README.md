@@ -85,10 +85,12 @@ O overlay no Linux suporta 4 canais simultâneos de controle:
 
 #### 1. Interação Direta com o Mouse (Modo Interativo):
 - **Arrastar o Card**: Clique e segure com o botão esquerdo em qualquer ponto do card para arrastá-lo e reposicioná-lo livremente na tela. A nova posição é memorizada automaticamente entre cards e sessões.
+- **Revelar Termo Ocluso**: Clique sobre o card ou simplesmente passe o cursor do mouse (hover) por cima para revelar antecipadamente qualquer termo ocluso em modo Active Recall (`[...]`).
 - **Botão de Lixeira 🗑️**: Localizado no canto superior direito do card. Clique nele para descartar permanentemente o card atual caso o considere inútil. O card é excluído do baralho e o próximo card é exibido imediatamente.
 
 #### 2. Atalhos Rápidos no Terminal Interativo (quando executado via `./iniciar.sh`):
 Pressione uma única tecla no terminal (sem necessidade de pressionar Enter):
+- `Espaço` : **Revelar Termo Ocluso** (Active Recall) imediatamente
 - `p` : **Pausar / Retomar** as notificações
 - `n` : **Avançar** para o próximo card imediatamente
 - `x` : **Excluir / Descartar** o card atual do baralho (ação da lixeira)
@@ -99,6 +101,7 @@ Pressione uma única tecla no terminal (sem necessidade de pressionar Enter):
 
 #### 3. Bandeja do Sistema (System Tray Icon):
 Um ícone estilizado é adicionado à barra de tarefas (KDE Plasma, GNOME com AppIndicator, XFCE). Clique com o botão direito para:
+- 💡 Revelar Termo Oculto (Espaço)
 - ⏯️ Pausar / Retomar
 - ⏭️ Próximo Card
 - 🗑️ Excluir Card Atual
@@ -112,6 +115,7 @@ Um ícone estilizado é adicionado à barra de tarefas (KDE Plasma, GNOME com Ap
 Você pode enviar comandos instantâneos a partir de qualquer terminal ou script para a instância em execução:
 ```bash
 ./iniciar.sh --next            # Avança para o próximo card
+./iniciar.sh --reveal          # Revela imediatamente o termo ocluso (Active Recall)
 ./iniciar.sh --exclude         # Descarta o card atual (lixeira)
 ./iniciar.sh --reset-pos       # Restaura posição padrão do card na tela
 ./iniciar.sh --reset-excluded  # Restaura todos os cards previamente descartados
@@ -123,7 +127,7 @@ Você pode enviar comandos instantâneos a partir de qualquer terminal ou script
 ```
 
 #### 5. Como configurar Atalhos Globais no Linux:
-- **KDE Plasma**: Vá em *Configurações do Sistema > Atalhos > Atalhos Personalizados > Editar > Novo > Atalho Global > Comando/URL*. Defina o atalho desejado (ex: `Ctrl+Alt+N`) e aponte para `/caminho/do/projeto/iniciar.sh --next`. Repita para `--exclude` (`Ctrl+Alt+X`), `--pause` (`Ctrl+Alt+P`), etc.
+- **KDE Plasma**: Vá em *Configurações do Sistema > Atalhos > Atalhos Personalizados > Editar > Novo > Atalho Global > Comando/URL*. Defina o atalho desejado (ex: `Ctrl+Alt+N`) e aponte para `/caminho/do/projeto/iniciar.sh --next`. Repita para `--reveal` (`Ctrl+Alt+Espaço`), `--exclude` (`Ctrl+Alt+X`), `--pause` (`Ctrl+Alt+P`), etc.
 - **GNOME**: Vá em *Configurações > Teclado > Atalhos de Teclado > Personalizar Atalhos*. Adicione comando `/caminho/do/projeto/iniciar.sh --next` e vincule ao atalho desejado.
 
 ---
@@ -131,11 +135,13 @@ Você pode enviar comandos instantâneos a partir de qualquer terminal ou script
 ### Atalhos no Windows 11 (AutoHotkey v2):
 
 - **Arrastar o Card**: Clique e arraste o card com o botão esquerdo para qualquer posição desejada na tela. O card memoriza a coordenada e continua gerando no mesmo local para todos os cards e sessões subsequentes.
+- **Revelar Termo Ocluso**: Clique no card ou passe o mouse para revelar termos oclusos antecipadamente.
 - **Botão de Lixeira 🗑️**: Clique para descartar o card atual permanentemente.
-- **Bandeja do Sistema**: Clique com o botão direito no ícone da bandeja para acessar "Restaurar Posição Padrão".
+- **Bandeja do Sistema**: Clique com o botão direito no ícone da bandeja para acessar "Restaurar Posição Padrão" ou "Revelar Termo Oculto".
 
 | Atalho | Ação | Descrição |
 | :--- | :--- | :--- |
+| `Ctrl + Alt + Espaço` | **Revelar Termo Oculto** | Revela a resposta ou termo ocluso em modo Active Recall (`[...]`). |
 | `Ctrl + Alt + P` | **Pausar / Retomar** | Oculta o card e congela o cronômetro. Ao retomar, reinicia o ciclo sem acúmulo de atrasos. |
 | `Ctrl + Alt + N` | **Avançar Card** | Exibe imediatamente a próxima microlição, reiniciando o timer de visibilidade. |
 | `Ctrl + Alt + X` | **Excluir Card** | Descarta permanentemente a microlição atual (lixeira 🗑️) e avança para a próxima. |
@@ -191,6 +197,9 @@ opacity=230                      ; Opacidade da janela (20 a 255)
 bg_color=14241F                  ; Cor de fundo em hexadecimal (RGB)
 show_on_start=1                  ; Exibir card teste ao abrir (1=sim, 0=não)
 click_through=0                  ; 0 = Interativo (arrastável com mouse e lixeira 🗑️), 1 = Passivo
+cloze_enabled=1                  ; 1 = Ativar modo Active Recall / Cloze Deletion (0 = desativado)
+cloze_reveal_seconds=4           ; Segundos de oclusão com [...] antes da revelação automática
+highlight_keywords=1             ; 1 = Destacar prazos (âmbar) e vedações jurídicas (coral)
 
 [Contexto]
 target_exes=                     ; Lista de executáveis (ex: jogo.exe,cs2). Vazio = todos
@@ -202,7 +211,27 @@ remember_progress=1              ; Salvar cards já vistos para repetição espa
 
 ---
 
-## 7. Comportamento em Jogos e Segurança
+## 7. Modo Active Recall e Destaque Visual Inteligente
+
+O MicroEstudo Overlay inclui dois mecanismos pedagógicos avançados projetados para turbinar a memorização de alto rendimento durante partidas:
+
+### A. Modo Active Recall / Cloze Deletion (Oclusão de Termos)
+- **Como Funciona**: Em vez de ler a resposta passivamente, o termo-chave é inicialmente ocultado com `[...]` durante os primeiros segundos (padrão: 4s configuráveis em `cloze_reveal_seconds`). Isso força o cérebro a recuperar ativamente a informação da memória antes da confirmação.
+- **Marcação Manual**: Suporta a sintaxe `{{termo_oculto}}` no texto do Markdown. O conversor preserva rigorosamente a marcação e o overlay se encarrega de ocluir o termo.
+- **Detecção Inteligente para Conceitos**: Reconhece automaticamente estruturas de definições em cards de conceito (ex: `Conceito: Definição`, títulos repetidos no início do texto ou construções `Sujeito é / são / consiste em`), ocluindo o termo-chave sem que você precise editar manualmente centenas de cards.
+- **Revelação sob Demanda**: Além do temporizador automático, o termo oculto pode ser revelado instantaneamente:
+  - No **Windows**: Pelo atalho global `Ctrl + Alt + Espaço`, clicando no card, ou passando o cursor do mouse (hover) por cima.
+  - No **Linux**: Pressionando `Espaço` no terminal interativo, passando o mouse sobre o card, clicando/arrastando, ou via comando `./iniciar.sh --reveal`.
+
+### B. Renderização Visual com Destaque de Prazos e Palavras-Chave
+- **Prazos e Períodos (Âmbar Suave - `#FFD266`)**: Destaque automático para quantidades temporais e prazos jurídicos cruciais (ex: `15 dias`, `5 anos`, `24 horas`, `prazo recursal`, `prazo prescricional`, `quinquênio`).
+- **Palavras de Corte e Vedações (Coral Suave - `#FF7A7A`)**: Alerta visual instantâneo para termos restritivos que definem questões de prova (ex: `vedado`, `proibido`, `salvo`, `não cabe`, `nulo`, `inconstitucional`, `exceção`, `imprescritível`).
+- **Respostas de Active Recall (Ciano Suave - `#7EC8E3`)**: Os termos oclusos e respostas reveladas recebem destaque nítido e sublinhado.
+- **Desempenho Sem Flicker**: Implementado via controle nativo *RichEdit 5.0* no AutoHotkey v2 (Windows) e via HTML renderizado no PySide6 (Linux), garantindo consumo nulo de GPU e sem qualquer impacto na taxa de quadros (FPS) de jogos competitivos.
+
+---
+
+## 8. Comportamento em Jogos e Segurança
 
 - **Click-Through Total ou Modo Interativo**:
   - No Windows: Suporte a `WS_EX_TRANSPARENT` ou arrasto nativo com botão de lixeira caso interativo.
@@ -215,22 +244,22 @@ remember_progress=1              ; Salvar cards já vistos para repetição espa
 
 ---
 
-## 8. Verificação e Testes Automatizados
+## 9. Verificação e Testes Automatizados
 
 O projeto conta com suíte completa de testes automatizados com cobertura do conversor e do overlay:
 
 ```bash
 # Executar todos os testes automatizados (Linux ou Windows):
-python3 -m unittest discover -s testes -p "testar_*.py" -v
+python -m unittest discover -s testes -p "testar_*.py" -v
 ```
 
 ### Resultados da Suíte:
-- **`testes/testar_preparacao.py`**: 17 testes do conversor de Markdown (hierarquia de títulos, definições, acentos UTF-8, símbolos matemáticos, tabelas, sanitização TSV, segurança contra injeção, determinismo criptográfico dos IDs).
-- **`testes/testar_overlay_linux.py`**: 17 testes da interface gráfica e lógica Linux (carregamento de configurações e clamping de limites, carregamento e parsing de TSV com `\n`, algoritmo de repetição 70/30, persistência e sincronização de progresso, flags de janela e sem foco, cálculo de posição nos 4 cantos da tela, servidor de comandos IPC e status, arrasto livre com mouse e persistência de coordenadas, botão vetorial de lixeira e exclusão permanente, elisão de texto e ausência de sobreposição sobre rodapé).
+- **`testes/testar_preparacao.py`**: 28 testes automatizados cobrindo hierarquia de títulos, definições, acentos UTF-8, símbolos matemáticos, tabelas, sanitização TSV, determinismo de IDs, integridade e preservação de tags de Cloze `{{...}}`, quebra de sentenças sem fragmentação de oclusões, heurística de detecção inteligente de conceitos e renderização formatada de HTML com destaque de prazos e vedações.
+- **`testes/testar_overlay_linux.py`**: Suíte de testes da interface gráfica e lógica Linux (carregamento de configurações e clamping de limites, carregamento e parsing de TSV com `\n`, algoritmo de repetição 70/30, persistência e sincronização de progresso, flags de janela e sem foco, cálculo de posição nos 4 cantos da tela, servidor de comandos IPC e status, arrasto livre com mouse e persistência de coordenadas, botão vetorial de lixeira e exclusão permanente, elisão de texto e ausência de sobreposição sobre rodapé).
 
 ---
 
-## 9. Limitações Conhecidas e Escopo
+## 10. Limitações Conhecidas e Escopo
 
 - **Imagens e Diagramas Complexos**: Caixas ASCII multidimensionais e diagramas visuais não cabem esteticamente no formato de microlições de 440×160 pixels. O conversor extrai os mnemônicos lineares e registra aviso detalhado em `dados/relatorio_conversao.txt`.
 - **Tela Cheia Exclusiva**: Em títulos que utilizam DirectX ou Vulkan exclusivo sem repasse para o compositor de janelas, é necessário alterar o jogo nas opções de vídeo para "Janela sem bordas" (Borderless).

@@ -10,19 +10,19 @@ Faixa configurada:     min_chars=90, max_chars=220
 ----------------------------------------------------------------------
 DISTRIBUIÇÃO DE CARDS POR ASSUNTO:
 ----------------------------------------------------------------------
-• 1. Estado, Governo e Administração Pública: Conceito...: 129 cards
-• 10. Noções de Licitações e Contratos (Lei nº 14.133/2021 e...: 95 cards
+• 1. Estado, Governo e Administração Pública: Conceito, Elementos, Poderes e Organização do Estado: 129 cards
+• 10. Noções de Licitações e Contratos (Lei nº 14.133/2021 e suas alterações): 95 cards
 • 2. Ato Administrativo: 88 cards
 • 3. Agentes Públicos: 80 cards
 • 4. Direito Administrativo Disciplinar: 60 cards
-• 8. Evolução dos Modelos de Gestão Pública: Patrimonialismo...: 57 cards
+• 8. Evolução dos Modelos de Gestão Pública: Patrimonialismo, Administração Burocrática e Nova Gestão Pública (New Public Management): 57 cards
 • 5. Poderes Administrativos: 41 cards
 • 9. Governança na Administração Pública: 41 cards
-• 12. Lei Geral de Proteção de Dados Pessoais (Lei nº...: 40 cards
-• 7. Improbidade Administrativa (Lei nº 8.429/1992 e suas...: 31 cards
-• 13. Guia de Revisão Rápida, Mnemônicos Estratégicos e Prazos...: 30 cards
+• 12. Lei Geral de Proteção de Dados Pessoais (Lei nº 13.709/2018 e suas alterações): 40 cards
+• 7. Improbidade Administrativa (Lei nº 8.429/1992 e suas alterações): 31 cards
+• 13. Guia de Revisão Rápida, Mnemônicos Estratégicos e Prazos Cruciais: 30 cards
 • 6. Responsabilidade Civil do Estado: 28 cards
-• 11. Lei de Acesso à Informação (Lei nº 12.527/2011 e suas...: 25 cards
+• 11. Lei de Acesso à Informação (Lei nº 12.527/2011 e suas alterações): 25 cards
 
 ----------------------------------------------------------------------
 SEÇÕES IGNORADAS CONFORME ESPECIFICAÇÃO:

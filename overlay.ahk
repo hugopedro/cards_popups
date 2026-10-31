@@ -43,7 +43,11 @@ global Config := Map(
     "click_through", 0,
     "target_exes", "",
     "hide_when_target_inactive", 1,
-    "remember_progress", 1
+    "remember_progress", 1,
+    "cloze_enabled", 1,
+    "cloze_reveal_seconds", 4,
+    "highlight_keywords", 1,
+    "interleave_topics", 1
 )
 
 ; Estado do aplicativo
@@ -51,6 +55,8 @@ global Cards := []
 global Progresso := Map()
 global Excluidos := Map()
 global UltimoCardId := ""
+global UltimoAssunto := ""
+global UltimoSubtema := ""
 global EstaPausado := false
 global CardVisivel := false
 global OverlayGui := ""
@@ -59,6 +65,11 @@ global CtrlTitulo := ""
 global CtrlTexto := ""
 global CtrlOrigem := ""
 global CustomPos := ""
+global CardAtual := ""
+global BtnLixeira := ""
+global EstaEmOclusao := false
+global RichEditCarregado := false
+global HBrushFundo := ""
 
 ; Inicialização do sistema
 CarregarConfiguracoes()
@@ -70,6 +81,7 @@ SincronizarProgressoComCards()
 CriarInterface()
 A_TrayMenu.Add()
 A_TrayMenu.Add("Restaurar Posição Padrão", (*) => RedefinirPosicao())
+A_TrayMenu.Add("Revelar Termo Oculto (Ctrl+Alt+Espaço)", (*) => RevelarClozeAtual())
 
 ; Hotkeys globais padrão
 ^!p::AlternarPausa()          ; Ctrl + Alt + P: Pausar / Retomar
@@ -77,8 +89,14 @@ A_TrayMenu.Add("Restaurar Posição Padrão", (*) => RedefinirPosicao())
 ^!x::ExcluirCardAtual()       ; Ctrl + Alt + X: Excluir card inútil
 ^!c::RedefinirPosicao()       ; Ctrl + Alt + C: Restaurar posição padrão
 ^!h::OcultarCardAtual()       ; Ctrl + Alt + H: Esconder card atual
+^!Space::RevelarClozeAtual()  ; Ctrl + Alt + Espaço: Revelar termo/resposta oculta
 ^!r::RecarregarConteudo()     ; Ctrl + Alt + R: Reprocessar e recarregar
 ^!q::SairAplicativo()         ; Ctrl + Alt + Q: Sair e salvar
+
+; Hotkey de revelação quando o card estiver com foco
+#HotIf (OverlayGui != "" && WinActive("ahk_id " . OverlayGui.Hwnd))
+Space::RevelarClozeAtual()    ; Espaço: Revelar termo ocluso quando overlay está ativo
+#HotIf
 
 ; Monitoramento periódico do foco do jogo (a cada 1 segundo)
 SetTimer(MonitorarFocoJogo, 1000)
@@ -122,10 +140,25 @@ CarregarConfiguracoes() {
         }
     }
 
+    LerBool(secao, chave, padrao) {
+        try {
+            val := StrLower(Trim(IniRead(iniFile, secao, chave, padrao)))
+            if (val = "1" || val = "true" || val = "yes" || val = "sim")
+                return 1
+            if (val = "0" || val = "false" || val = "no" || val = "nao")
+                return 0
+            num := Integer(val)
+            return num ? 1 : 0
+        } catch {
+            return padrao
+        }
+    }
+
     Config["arquivo"] := LerStr("Conteudo", "arquivo", Config["arquivo"])
     Config["min_chars"] := LerInt("Conteudo", "min_chars", Config["min_chars"], 30, 400)
     Config["max_chars"] := LerInt("Conteudo", "max_chars", Config["max_chars"], 60, 600)
     Config["new_ratio"] := LerInt("Conteudo", "new_ratio", Config["new_ratio"], 0, 100)
+    Config["interleave_topics"] := LerBool("Conteudo", "interleave_topics", Config["interleave_topics"])
 
     Config["interval_seconds"] := LerInt("Exibicao", "interval_seconds", Config["interval_seconds"], 10, 3600)
     Config["visible_seconds"] := LerInt("Exibicao", "visible_seconds", Config["visible_seconds"], 5, Config["interval_seconds"])
@@ -139,10 +172,14 @@ CarregarConfiguracoes() {
     Config["bg_color"] := LerStr("Exibicao", "bg_color", Config["bg_color"])
     Config["show_on_start"] := LerInt("Exibicao", "show_on_start", Config["show_on_start"], 0, 1)
     Config["click_through"] := LerInt("Exibicao", "click_through", Config["click_through"], 0, 1)
+    Config["cloze_enabled"] := LerBool("Exibicao", "cloze_enabled", Config["cloze_enabled"])
+    Config["cloze_reveal_seconds"] := LerInt("Exibicao", "cloze_reveal_seconds", Config["cloze_reveal_seconds"], 1, 60)
+    Config["highlight_keywords"] := LerBool("Exibicao", "highlight_keywords", Config["highlight_keywords"])
 
     Config["target_exes"] := LerStr("Contexto", "target_exes", Config["target_exes"])
     Config["hide_when_target_inactive"] := LerInt("Contexto", "hide_when_target_inactive", Config["hide_when_target_inactive"], 0, 1)
     Config["remember_progress"] := LerInt("Estado", "remember_progress", Config["remember_progress"], 0, 1)
+    AtualizarBrushFundo()
 }
 
 CarregarExcluidos() {
@@ -298,14 +335,235 @@ SalvarProgresso() {
 ; --------------------------------------------------------------------
 
 CriarInterface() {
-    global OverlayGui
+    global OverlayGui, RichEditCarregado
+    try {
+        hModule := DllCall("LoadLibrary", "Str", "msftedit.dll", "Ptr")
+        if (hModule != 0)
+            RichEditCarregado := true
+    } catch {
+        RichEditCarregado := false
+    }
+
+    AtualizarBrushFundo()
+
+    ; Garante que nenhum controle pinte com fundo branco padrão
+    OnMessage(0x0138, AoCtlColorOverlay) ; WM_CTLCOLORSTATIC
+    OnMessage(0x0133, AoCtlColorOverlay) ; WM_CTLCOLOREDIT
+
     if (!Config["click_through"]) {
-        OnMessage(0x0201, ArrastoJanelaAHK) ; WM_LBUTTONDOWN -> arrastar
+        OnMessage(0x0201, ArrastoJanelaAHK) ; WM_LBUTTONDOWN -> arrastar e revelar
+        OnMessage(0x0200, AoMoverMouseOverlay) ; WM_MOUSEMOVE -> revelar ao passar o mouse
+        OnMessage(0x0020, AoSetCursorOverlay) ; WM_SETCURSOR -> cursor de seta sobre o texto
+    }
+}
+
+AtualizarBrushFundo() {
+    global HBrushFundo, Config
+    if (HBrushFundo != "") {
+        try DllCall("DeleteObject", "Ptr", HBrushFundo)
+    }
+    hexColor := Config["bg_color"]
+    r := Integer("0x" . SubStr(hexColor, 1, 2))
+    g := Integer("0x" . SubStr(hexColor, 3, 2))
+    b := Integer("0x" . SubStr(hexColor, 5, 2))
+    bgr := (b << 16) | (g << 8) | r
+    HBrushFundo := DllCall("CreateSolidBrush", "UInt", bgr, "Ptr")
+}
+
+AoCtlColorOverlay(wParam, lParam, msg, hwnd) {
+    global HBrushFundo, Config
+    hexColor := Config["bg_color"]
+    r := Integer("0x" . SubStr(hexColor, 1, 2))
+    g := Integer("0x" . SubStr(hexColor, 3, 2))
+    b := Integer("0x" . SubStr(hexColor, 5, 2))
+    bgr := (b << 16) | (g << 8) | r
+    DllCall("SetBkColor", "Ptr", wParam, "UInt", bgr)
+    return HBrushFundo
+}
+
+AoSetCursorOverlay(wParam, lParam, msg, hwnd) {
+    global CtrlTexto
+    if (CtrlTexto != "" && (hwnd == CtrlTexto.Hwnd || (IsObject(CtrlTexto) && hwnd == CtrlTexto))) {
+        DllCall("SetCursor", "Ptr", DllCall("LoadCursor", "Ptr", 0, "Int", 32512, "Ptr")) ; IDC_ARROW
+        return true
+    }
+}
+
+AoMoverMouseOverlay(wParam, lParam, msg, hwnd) {
+    global OverlayGui, EstaEmOclusao
+    if (EstaEmOclusao && OverlayGui != "") {
+        if (hwnd == OverlayGui.Hwnd || DllCall("IsChild", "Ptr", OverlayGui.Hwnd, "Ptr", hwnd)) {
+            RevelarClozeAtual()
+        }
+    }
+}
+
+DefinirCorFundoRichEdit(ctrl, hexColor) {
+    r := Integer("0x" . SubStr(hexColor, 1, 2))
+    g := Integer("0x" . SubStr(hexColor, 3, 2))
+    b := Integer("0x" . SubStr(hexColor, 5, 2))
+    bgr := (b << 16) | (g << 8) | r
+    hCtrl := (ctrl is Integer) ? ctrl : (IsObject(ctrl) && ctrl.HasProp("Hwnd") ? ctrl.Hwnd : ctrl)
+    DllCall("SendMessageW", "Ptr", hCtrl, "UInt", 0x0443, "UPtr", 0, "UPtr", bgr, "Ptr") ; EM_SETBKGNDCOLOR
+}
+
+AtualizarRichEditText(ctrl, rtfText) {
+    DefinirCorFundoRichEdit(ctrl, Config["bg_color"])
+    st := Buffer(8, 0)
+    NumPut("UInt", 0, st, 0)
+    NumPut("UInt", 1200, st, 4)
+    hCtrl := (ctrl is Integer) ? ctrl : (IsObject(ctrl) && ctrl.HasProp("Hwnd") ? ctrl.Hwnd : ctrl)
+    DllCall("SendMessageW", "Ptr", hCtrl, "UInt", 0x0461, "Ptr", st.Ptr, "WStr", rtfText, "Ptr") ; EM_SETTEXTEX
+    DllCall("SendMessageW", "Ptr", hCtrl, "UInt", 0x00B1, "Ptr", -1, "Ptr", -1, "Ptr") ; EM_SETSEL
+    DllCall("HideCaret", "Ptr", hCtrl)
+    DefinirCorFundoRichEdit(ctrl, Config["bg_color"])
+}
+
+RegexEscape(str) {
+    return RegExReplace(str, "([\\.\$\^\*\+\?\(\)\[\]\{\}\|])", "\$1")
+}
+
+EscaparRTF(str) {
+    str := StrReplace(str, "\", "\\")
+    str := StrReplace(str, "{", "\{")
+    str := StrReplace(str, "}", "\}")
+    str := StrReplace(str, "`r`n", "\line ")
+    str := StrReplace(str, "`n", "\line ")
+    res := ""
+    Loop Parse str {
+        code := Ord(A_LoopField)
+        if (code > 32767) {
+            res .= "\u" . (code - 65536) . " "
+        } else if (code > 127) {
+            res .= "\u" . code . " "
+        } else {
+            res .= A_LoopField
+        }
+    }
+    return res
+}
+
+GerarRTF(textoBruto, titulo, emOclusao, destacarKeywords, fontSize, &teveCloze) {
+    textoProcessado := textoBruto
+    teveCloze := false
+    clozes := []
+
+    ; 1. Cloze Manual: extrai todas as tags {{...}}
+    while RegExMatch(textoProcessado, "\{\{([^}]+)\}\}", &mManual) {
+        teveCloze := true
+        idx := clozes.Length
+        clozes.Push(mManual[1])
+        textoProcessado := RegExReplace(textoProcessado, "\{\{[^}]+\}\}", Chr(3) . "CLOZE_" . idx . Chr(3), , 1)
+    }
+
+    ; 2. Cloze Inteligente para cards de conceito/definição (se não houver marcação manual)
+    if (!teveCloze && Config["cloze_enabled"]) {
+        titLimpo := Trim(RegExReplace(titulo, "^\d+[\.\)]\s*", ""))
+        mColon := ""
+        mTit := ""
+        mDef := ""
+
+        if RegExMatch(textoProcessado, "(*UCP)^([^:]{3,40}):\s+(.+)$", &mColon) {
+            termoC := Trim(mColon[1])
+            if !RegExMatch(termoC, "i)^(?:\*+|_+)?(?:ex|exemplo|exemplos|obs|nota|art\.?)\b") {
+                teveCloze := true
+                clozes.Push(termoC)
+                textoProcessado := Chr(3) . "CLOZE_0" . Chr(3) . ": " . mColon[2]
+            }
+        }
+        else if (StrLen(titLimpo) >= 4 && RegExMatch(textoProcessado, "i)(*UCP)\b(" . RegexEscape(titLimpo) . ")\b", &mTit)) {
+            teveCloze := true
+            clozes.Push(mTit[1])
+            textoProcessado := RegExReplace(textoProcessado, "i)(*UCP)\b" . RegexEscape(titLimpo) . "\b", Chr(3) . "CLOZE_0" . Chr(3), , 1)
+        }
+        else if RegExMatch(textoProcessado, "i)(*UCP)^((?:O|A|Os|As|Um|Uma)?\s*[\p{L}\w\-]+(?:\s+[\p{L}\w\-]+){0,3})\s+(é|são|consiste em|compreende)\b", &mDef) {
+            teveCloze := true
+            clozes.Push(Trim(mDef[1]))
+            resto := SubStr(textoProcessado, StrLen(mDef[0]) + 1)
+            textoProcessado := Chr(3) . "CLOZE_0" . Chr(3) . " " . mDef[2] . resto
+        }
+    }
+
+    ; 3. Destaque de Prazos e Vedações (somente fora dos clozes protegidos)
+    if (destacarKeywords) {
+        padraoPrazos := "i)(*UCP)\b(?:\d+|(?:um|dois|três|tres|quatro|cinco|seis|sete|oito|nove|dez|quinze|vinte|trinta|quarenta|cinquenta|sessenta|noventa|cento e vinte))\s*(?:dias\s+úteis|dias|dia|meses|mês|mes|anos|ano|horas|hora|minutos|minuto)\b"
+        padraoPrazos .= "|\b(?:prazos?\s+prescriciona(?:l|is)|prazos?\s+decadencia(?:l|is)|prazos?\s+recursais?|quinquênio|triênio|biênio|prescrição\s+quinquenal)\b"
+
+        padraoVedacoes := "i)(*UCP)\b(?:vedado|vedada|vedados|vedadas|vedação|vedações|proibido|proibida|proibidos|proibidas|proibição|proibições|salvo\s+se|salvo|não\s+cabe|nao\s+cabe|não\s+caberá|não\s+cabem|nulo|nula|nulos|nulas|nulidade|nulidades|inconstitucional|inconstitucionais|inconstitucionalidade|exceção|exceções|excecao|excecoes|defeso|defesa|indeferimento|indeferido|indeferida|imprescritível|imprescritibilidade|indelegável|indelegabilidade|irrenunciável|irrenunciabilidade|inafastável)\b"
+
+        textoProcessado := RegExReplace(textoProcessado, padraoPrazos, Chr(1) . "PRAZO:$0" . Chr(2))
+        textoProcessado := RegExReplace(textoProcessado, padraoVedacoes, Chr(1) . "VEDACAO:$0" . Chr(2))
+    }
+
+    ; 4. Substituição das tags de Cloze pelo marcador formatado
+    Loop clozes.Length {
+        idx := A_Index - 1
+        termoCloze := clozes[A_Index]
+        placeholder := Chr(3) . "CLOZE_" . idx . Chr(3)
+        if (emOclusao) {
+            textoProcessado := StrReplace(textoProcessado, placeholder, Chr(1) . "CLOZE_PH" . Chr(2))
+        } else {
+            textoProcessado := StrReplace(textoProcessado, placeholder, Chr(1) . "CLOZE_REV:" . termoCloze . Chr(2))
+        }
+    }
+
+    fsHalf := Round(fontSize * 2)
+    header := "{\rtf1\ansi\deff0{\fonttbl{\f0\fswiss\fprq2\fcharset0 Segoe UI;}}"
+    header .= "{\colortbl;\red228\green237\blue231;\red255\green210\blue102;\red255\green122\blue122;\red126\green200\blue227;}"
+    header .= "\f0\fs" . fsHalf . "\uc0\cf1 "
+
+    rtfCorpo := ""
+    pos := 1
+    padraoTags := "\x01([A-Z_]+)(?::([^\x02]*))?\x02"
+
+    while RegExMatch(textoProcessado, padraoTags, &match, pos) {
+        partePre := SubStr(textoProcessado, pos, match.Pos - pos)
+        rtfCorpo .= EscaparRTF(partePre)
+
+        tagTipo := match[1]
+        tagVal := match[2]
+
+        if (tagTipo == "CLOZE_PH") {
+            rtfCorpo .= "\b\cf4 [...]\b0\cf1 "
+        } else if (tagTipo == "CLOZE_REV") {
+            rtfCorpo .= "\b\ul\cf4 " . EscaparRTF(tagVal) . "\ul0\b0\cf1 "
+        } else if (tagTipo == "PRAZO") {
+            rtfCorpo .= "\b\cf2 " . EscaparRTF(tagVal) . "\b0\cf1 "
+        } else if (tagTipo == "VEDACAO") {
+            rtfCorpo .= "\b\cf3 " . EscaparRTF(tagVal) . "\b0\cf1 "
+        }
+
+        pos := match.Pos + match.Len
+    }
+    rtfCorpo .= EscaparRTF(SubStr(textoProcessado, pos))
+
+    return header . rtfCorpo . "}"
+}
+
+RevelarClozeAtual() {
+    global EstaEmOclusao, CtrlTexto, CardAtual, Config, CardVisivel, RichEditCarregado
+    if (!EstaEmOclusao || CardAtual == "" || CtrlTexto == "" || !CardVisivel)
+        return
+
+    SetTimer(RevelarClozeAtual, 0)
+    EstaEmOclusao := false
+
+    if (RichEditCarregado) {
+        teveCloze := false
+        rtfRevelado := GerarRTF(CardAtual["texto"], CardAtual["titulo"], false, Config["highlight_keywords"], Config["font_size"], &teveCloze)
+        AtualizarRichEditText(CtrlTexto, rtfRevelado)
+    } else {
+        textoLimpo := RegExReplace(CardAtual["texto"], "\{\{([^}]+)\}\}", "$1")
+        try CtrlTexto.Value := textoLimpo
     }
 }
 
 RenderizarCard(card) {
-    global OverlayGui, Config, CustomPos, CtrlAssunto, CtrlTitulo, CtrlTexto, CtrlOrigem
+    global OverlayGui, Config, CustomPos, CtrlAssunto, CtrlTitulo, CtrlTexto, CtrlOrigem, BtnLixeira, CardAtual, EstaEmOclusao, RichEditCarregado
+
+    SetTimer(RevelarClozeAtual, 0)
+    EstaEmOclusao := false
+    CardAtual := card
 
     if (OverlayGui != "") {
         try OverlayGui.Destroy()
@@ -337,35 +595,96 @@ RenderizarCard(card) {
 
     origemTxt := card["origem"] . "  •  ID: " . SubStr(card["id"], 1, 8)
 
-    ; Cabeçalho: Assunto / Subtema e Botão de Lixeira
+    ; Cabeçalho: Assunto / Subtema e Botão de Lixeira (sem truncamento por 75 caracteres)
     if (!Config["click_through"]) {
         wBtn := 22
         wAssunto := wBox - wBtn - 8
         OverlayGui.SetFont("s" . fSub . " bold c88A89A", "Segoe UI")
-        CtrlAssunto := OverlayGui.Add("Text", "+Disabled w" . wAssunto . " r1", SubStr(assuntoTxt, 1, 75))
+        CtrlAssunto := OverlayGui.Add("Text", "xm ym +Disabled w" . wAssunto, assuntoTxt)
 
         OverlayGui.SetFont("s10 bold c88A89A", "Segoe UI")
-        btnLixeira := OverlayGui.Add("Text", "x+" . 4 . " yp w" . wBtn . " h18 Center +0x200 BackgroundTrans", "🗑")
-        btnLixeira.OnEvent("Click", (*) => ExcluirCardAtual())
+        BtnLixeira := OverlayGui.Add("Text", "x" . (wBox + 16 - wBtn) . " y12 w" . wBtn . " h18 Center +0x200 BackgroundTrans", "🗑")
+        BtnLixeira.OnEvent("Click", (*) => ExcluirCardAtual())
+
+        CtrlAssunto.GetPos(&ax, &ay, &aw, &ah)
+        yTit := Max(ay + ah + 4, 12 + 18 + 4)
     } else {
         OverlayGui.SetFont("s" . fSub . " bold c88A89A", "Segoe UI")
-        CtrlAssunto := OverlayGui.Add("Text", "+Disabled +E0x20 w" . wBox . " r1", SubStr(assuntoTxt, 1, 75))
+        CtrlAssunto := OverlayGui.Add("Text", "xm ym +Disabled +E0x20 w" . wBox, assuntoTxt)
+        CtrlAssunto.GetPos(&ax, &ay, &aw, &ah)
+        yTit := ay + ah + 4
     }
 
-    ; Título em destaque (permite acomodar título completo)
+    ; Título em destaque (posicionado logo após o cabeçalho completo, permite quebras de linha sem truncamento)
     OverlayGui.SetFont("s" . fTit . " bold cFFFFFF", "Segoe UI")
-    CtrlTitulo := OverlayGui.Add("Text", "xm y+4 +Disabled w" . wBox, card["titulo"])
+    CtrlTitulo := OverlayGui.Add("Text", "xm y" . yTit . " +Disabled w" . wBox, card["titulo"])
 
-    ; Texto da microlição com auto-dimensionamento exato (sem corte vertical!)
-    OverlayGui.SetFont("s" . fSize . " norm cE4EDE7", "Segoe UI")
-    CtrlTexto := OverlayGui.Add("Text", "xm y+6 +Disabled w" . wBox, card["texto"])
+    ; Texto da microlição com auto-dimensionamento exato e suporte a RichEdit e Cloze
+    emOclusao := Config["cloze_enabled"] ? true : false
+    teveCloze := false
 
-    ; Rodapé discreto com origem (sempre visível na base)
-    OverlayGui.SetFont("s" . (fSub - 0.5) . " c5E7A6E", "Segoe UI")
-    CtrlOrigem := OverlayGui.Add("Text", "xm y+6 +Disabled w" . wBox . " r1", origemTxt)
+    if (RichEditCarregado) {
+        ; Mede altura necessária utilizando label invisível com mesma fonte e largura
+        OverlayGui.SetFont("s" . fSize . " norm cE4EDE7", "Segoe UI")
+        dummyMedidor := OverlayGui.Add("Text", "xm y+6 +Hidden w" . wBox, card["texto"])
 
-    ; Mede dimensões ideais com AutoSize
-    OverlayGui.Show("AutoSize Hide")
+        OverlayGui.Show("AutoSize Hide")
+        dummyMedidor.GetPos(&tx, &ty, &tw, &th)
+        th := Max(th + 6, 30)
+        dummyMedidor.Visible := false
+
+        rtfConteudo := GerarRTF(card["texto"], card["titulo"], emOclusao, Config["highlight_keywords"], fSize, &teveCloze)
+        EstaEmOclusao := teveCloze
+
+        ; Adiciona controle RichEdit 5.0 (multiline, sem borda, somente leitura — NÃO usar +Disabled para manter o fundo escuro)
+        CtrlTexto := OverlayGui.Add("Custom", "x" . tx . " y" . ty . " w" . tw . " h" . th . " ClassRICHEDIT50W +0x0004 +ReadOnly -Border -HScroll -VScroll")
+        DllCall("SendMessageW", "Ptr", CtrlTexto.Hwnd, "UInt", 0x00D3, "UPtr", 3, "UPtr", 0, "Ptr") ; EM_SETMARGINS
+        AtualizarRichEditText(CtrlTexto, rtfConteudo)
+
+        ; Rodapé discreto com origem posicionado logo após o RichEdit
+        OverlayGui.SetFont("s" . (fSub - 0.5) . " c5E7A6E", "Segoe UI")
+        CtrlOrigem := OverlayGui.Add("Text", "x" . tx . " y" . (ty + th + 6) . " +Disabled w" . wBox . " r1", origemTxt)
+
+        ; Atualiza dimensionamento da janela considerando o rodapé e o RichEdit completo
+        OverlayGui.Show("AutoSize Hide")
+
+        if (EstaEmOclusao) {
+            SetTimer(RevelarClozeAtual, -(Config["cloze_reveal_seconds"] * 1000))
+        }
+    } else {
+        textoFallback := card["texto"]
+        if (emOclusao && InStr(textoFallback, "{{") && InStr(textoFallback, "}}")) {
+            textoFallback := RegExReplace(textoFallback, "\{\{[^}]+\}\}", "[...]")
+            EstaEmOclusao := true
+        } else if (emOclusao && Config["cloze_enabled"]) {
+            titLimpo := Trim(RegExReplace(card["titulo"], "^\d+[\.\)]\s*", ""))
+            if RegExMatch(textoFallback, "(*UCP)^([^:]{3,40}):\s+(.+)$", &mColon) && !RegExMatch(mColon[1], "i)^(?:\*+|_+)?(?:ex|exemplo|exemplos|obs|nota|art\.?)\b") {
+                textoFallback := "[...]: " . mColon[2]
+                EstaEmOclusao := true
+            } else if (StrLen(titLimpo) >= 4 && RegExMatch(textoFallback, "i)(*UCP)\b(" . RegexEscape(titLimpo) . ")\b", &mTit)) {
+                textoFallback := RegExReplace(textoFallback, "i)(*UCP)\b" . RegexEscape(titLimpo) . "\b", "[...]", , 1)
+                EstaEmOclusao := true
+            } else if RegExMatch(textoFallback, "i)(*UCP)^((?:O|A|Os|As|Um|Uma)?\s*[\p{L}\w\-]+(?:\s+[\p{L}\w\-]+){0,3})\s+(é|são|consiste em|compreende)\b", &mDef) {
+                resto := SubStr(textoFallback, StrLen(mDef[0]) + 1)
+                textoFallback := "[...] " . mDef[2] . resto
+                EstaEmOclusao := true
+            }
+        } else {
+            textoFallback := RegExReplace(textoFallback, "\{\{([^}]+)\}\}", "$1")
+        }
+        OverlayGui.SetFont("s" . fSize . " norm cE4EDE7", "Segoe UI")
+        CtrlTexto := OverlayGui.Add("Text", "xm y+6 +Disabled w" . wBox, textoFallback)
+
+        OverlayGui.SetFont("s" . (fSub - 0.5) . " c5E7A6E", "Segoe UI")
+        CtrlOrigem := OverlayGui.Add("Text", "xm y+6 +Disabled w" . wBox . " r1", origemTxt)
+
+        OverlayGui.Show("AutoSize Hide")
+
+        if (EstaEmOclusao) {
+            SetTimer(RevelarClozeAtual, -(Config["cloze_reveal_seconds"] * 1000))
+        }
+    }
+
     OverlayGui.GetPos(,, &gw, &gh)
 
     ; Garante altura mínima configurada (confortável)
@@ -402,7 +721,7 @@ SalvarPosicao(x, y) {
     posFile := A_ScriptDir . "\dados\posicao.json"
     try {
         DirCreate(A_ScriptDir . "\dados")
-        jsonContent := "{\n  `"x`": " . x . ",\n  `"y`": " . y . "\n}\n"
+        jsonContent := "{`n  `"x`": " . x . ",`n  `"y`": " . y . "`n}`n"
         if FileExist(posFile)
             FileDelete(posFile)
         FileAppend(jsonContent, posFile, "UTF-8")
@@ -427,10 +746,18 @@ RedefinirPosicao() {
 }
 
 ArrastoJanelaAHK(wParam, lParam, msg, hwnd) {
-    global OverlayGui, Config, CustomPos
+    global OverlayGui, Config, CustomPos, EstaEmOclusao, BtnLixeira
     if (Config["click_through"])
         return
-    if (OverlayGui != "" && hwnd == OverlayGui.Hwnd) {
+    if (OverlayGui != "") {
+        pertence := (hwnd == OverlayGui.Hwnd || DllCall("IsChild", "Ptr", OverlayGui.Hwnd, "Ptr", hwnd))
+        if (!pertence)
+            return
+        if (BtnLixeira != "" && hwnd == BtnLixeira.Hwnd)
+            return
+
+        if (EstaEmOclusao)
+            RevelarClozeAtual()
         ; SendMessage bloqueia de forma síncrona durante o arrasto interativo do Windows
         SendMessage(0xA1, 2,,, "ahk_id " . OverlayGui.Hwnd)
         ; Ao soltar o mouse, grava a nova coordenada exata e persiste no disco
@@ -478,50 +805,151 @@ CalcularPosicao(&posX, &posY, gw := 0, gh := 0) {
 ; --------------------------------------------------------------------
 
 SelecionarCard() {
-    global Cards, Progresso, UltimoCardId
+    global Cards, Progresso, UltimoCardId, UltimoAssunto, UltimoSubtema, Config
     if (Cards.Length == 0)
         return ""
 
     if (Cards.Length == 1)
         return Cards[1]
 
-    ; 1. Separar cards não vistos
+    ; 1. Separar cards não vistos e já vistos
     naoVistos := []
+    jaVistos := []
     for idx, c in Cards {
-        if (!Progresso.Has(c["id"]) || Progresso[c["id"]]["exibicoes"] == 0) {
+        cId := c["id"]
+        if (!Progresso.Has(cId) || Progresso[cId]["exibicoes"] == 0) {
             naoVistos.Push(c)
+        } else {
+            jaVistos.Push(c)
         }
     }
 
     sorteio := Random(1, 100)
     novoRatio := Config["new_ratio"]
+    intercalar := Config["interleave_topics"]
 
-    ; Se houver novos e (o sorteio favorecer novos OU for o primeiro card exibido nesta sessão)
-    if (naoVistos.Length > 0 && (sorteio <= novoRatio || UltimoCardId == "" || Progresso.Count == 0)) {
-        return naoVistos[1]
-    }
+    ; Decide se busca card novo ou revisão
+    queroNovo := (naoVistos.Length > 0) && (jaVistos.Length == 0 || sorteio <= novoRatio || UltimoCardId == "")
 
-    ; 2. Revisão: escolher dentre os já vistos com menor número de exposições
-    candidatos := []
-    for idx, c in Cards {
-        if (c["id"] != UltimoCardId) {
-            candidatos.Push(c)
+    cardEscolhido := ""
+
+    if (queroNovo) {
+        if (intercalar) {
+            ; Agrupa os cards não vistos por assunto (preservando ordem pedagógica interna de cada tópico)
+            assuntosMap := Map()
+            assuntosLista := []
+            for c in naoVistos {
+                ass := c["assunto"]
+                if (!assuntosMap.Has(ass)) {
+                    assuntosMap[ass] := []
+                    assuntosLista.Push(ass)
+                }
+                assuntosMap[ass].Push(c)
+            }
+
+            ; Filtra assuntos diferentes do último assunto exibido para evitar repetição do mesmo tema
+            candidatosAssuntos := []
+            for ass in assuntosLista {
+                if (ass != UltimoAssunto) {
+                    candidatosAssuntos.Push(ass)
+                }
+            }
+            if (candidatosAssuntos.Length == 0)
+                candidatosAssuntos := assuntosLista
+
+            ; Sorteia um assunto dentre os disponíveis
+            idxAssuntoSorteado := Random(1, candidatosAssuntos.Length)
+            assuntoEscolhido := candidatosAssuntos[idxAssuntoSorteado]
+
+            ; Pega o próximo card novo desse assunto
+            cardsDoAssunto := assuntosMap[assuntoEscolhido]
+            cardEscolhido := cardsDoAssunto[1]
+
+            ; Se houver mais de um card no assunto e o primeiro coincidir com UltimoSubtema, tenta alternar
+            if (cardsDoAssunto.Length > 1 && cardEscolhido["subtema"] == UltimoSubtema && UltimoSubtema != "") {
+                for cCand in cardsDoAssunto {
+                    if (cCand["subtema"] != UltimoSubtema) {
+                        cardEscolhido := cCand
+                        break
+                    }
+                }
+            }
+        } else {
+            cardEscolhido := naoVistos[1]
+        }
+    } else {
+        ; 2. Revisão real: escolher exclusivamente dentre os JÁ VISTOS
+        candidatos := []
+        for c in jaVistos {
+            if (c["id"] != UltimoCardId) {
+                candidatos.Push(c)
+            }
+        }
+        if (candidatos.Length == 0)
+            candidatos := (jaVistos.Length > 0 ? jaVistos : Cards)
+
+        ; Se intercalação ativa, prefere cards de assunto diferente do último
+        if (intercalar) {
+            candidatosOutros := []
+            for c in candidatos {
+                if (c["assunto"] != UltimoAssunto) {
+                    candidatosOutros.Push(c)
+                }
+            }
+            if (candidatosOutros.Length > 0)
+                candidatos := candidatosOutros
+        }
+
+        ; Encontra o menor número de exibições
+        menorExib := 999999
+        for c in candidatos {
+            cId := c["id"]
+            exib := Progresso.Has(cId) ? Progresso[cId]["exibicoes"] : 0
+            if (exib < menorExib) {
+                menorExib := exib
+            }
+        }
+
+        ; Filtra os cards empatados na menor exibição
+        menosExibidos := []
+        for c in candidatos {
+            cId := c["id"]
+            exib := Progresso.Has(cId) ? Progresso[cId]["exibicoes"] : 0
+            if (exib == menorExib) {
+                menosExibidos.Push(c)
+            }
+        }
+
+        ; Desempata pelo mais antigo (menor timestamp 'ultima')
+        menorTimestamp := 2147483647000
+        for c in menosExibidos {
+            cId := c["id"]
+            ts := Progresso.Has(cId) ? Progresso[cId]["ultima"] : 0
+            if (ts < menorTimestamp) {
+                menorTimestamp := ts
+            }
+        }
+        maisAntigos := []
+        for c in menosExibidos {
+            cId := c["id"]
+            ts := Progresso.Has(cId) ? Progresso[cId]["ultima"] : 0
+            if (ts == menorTimestamp) {
+                maisAntigos.Push(c)
+            }
+        }
+
+        if (maisAntigos.Length > 0) {
+            idxSort := Random(1, maisAntigos.Length)
+            cardEscolhido := maisAntigos[idxSort]
+        } else {
+            cardEscolhido := candidatos[1]
         }
     }
 
-    if (candidatos.Length == 0)
-        candidatos := Cards
-
-    menorExib := 999999
-    cardEscolhido := candidatos[1]
-
-    for c in candidatos {
-        cId := c["id"]
-        exib := Progresso.Has(cId) ? Progresso[cId]["exibicoes"] : 0
-        if (exib < menorExib) {
-            menorExib := exib
-            cardEscolhido := c
-        }
+    if (cardEscolhido != "") {
+        UltimoCardId := cardEscolhido["id"]
+        UltimoAssunto := cardEscolhido["assunto"]
+        UltimoSubtema := cardEscolhido["subtema"]
     }
 
     return cardEscolhido
@@ -545,6 +973,8 @@ ExibirProximoCard() {
         return
 
     UltimoCardId := card["id"]
+    UltimoAssunto := card["assunto"]
+    UltimoSubtema := card["subtema"]
 
     ; Atualizar estatísticas de progresso
     agora := A_NowUTC
@@ -569,7 +999,9 @@ ExibirProximoCard() {
 }
 
 OcultarCard() {
-    global CardVisivel, OverlayGui
+    global CardVisivel, OverlayGui, EstaEmOclusao
+    SetTimer(RevelarClozeAtual, 0)
+    EstaEmOclusao := false
     if (CardVisivel && OverlayGui != "") {
         OverlayGui.Hide()
         CardVisivel := false

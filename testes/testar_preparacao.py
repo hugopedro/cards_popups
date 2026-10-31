@@ -36,7 +36,10 @@ parent_dir = script_dir.parent
 sys.path.insert(0, str(parent_dir))
 
 import preparar_conteudo
-from preparar_conteudo import ParserMarkdown, Card, limpar_markdown, gerar_id, quebrar_em_limite_de_palavra
+from preparar_conteudo import (
+    ParserMarkdown, Card, limpar_markdown, gerar_id,
+    quebrar_em_limite_de_palavra, detectar_cloze_inteligente
+)
 
 
 class TestesConversorConteudo(unittest.TestCase):
@@ -508,8 +511,253 @@ Os poderes administrativos não são privilégios, mas sim verdadeiros poderes-d
         self.assertTrue(any("não são privilégios, mas sim" in t for t in textos), "A oração com 'mas sim' não foi preservada íntegra!")
         self.assertTrue(any("facultativa no PAD, ressalvada" in t for t in textos), "A oração com 'ressalvada' não foi preservada íntegra!")
 
+    # 25. Marcação manual de oclusão via {{termo_oculto}} preservada no corpo do card
+    def test_25_cloze_manual_preservado_no_texto(self):
+        md = """# Princípios Fundamentais
+## Legalidade
+- **Princípio da {{Legalidade}}**: O administrador público só pode agir nos limites estritos da {{lei formal}}.
+- *{{Moralidade}}*: A atuação deve observar a {{boa-fé objetiva}} e probidade.
+"""
+        caminho = self._criar_arquivo_md(md, "teste_cloze_manual.md")
+        p = ParserMarkdown(min_chars=20, max_chars=200)
+        p.processar_arquivo(caminho)
+
+        self.assertGreaterEqual(len(p.cards), 2)
+        # O título não deve conter as chaves brutas
+        for c in p.cards:
+            self.assertNotIn("{{", c.titulo)
+            self.assertNotIn("}}", c.titulo)
+            self.assertNotIn("{{", c.assunto)
+
+        textos = [c.texto for c in p.cards]
+        self.assertTrue(any("{{lei formal}}" in t for t in textos), "A tag manual {{lei formal}} não foi preservada no texto!")
+        self.assertTrue(any("{{boa-fé objetiva}}" in t for t in textos), "A tag manual {{boa-fé objetiva}} não foi preservada no texto!")
+
+    # 26. Quebra de sentença e palavras não divide {{termo_oculto}} ao meio
+    def test_26_quebra_de_sentenca_e_palavra_respeita_cloze(self):
+        texto_longo = (
+            "A prescrição administrativa da pretensão punitiva ocorre no prazo de "
+            "{{cinco anos contados da data da prática do ato}}, salvo quando o fato "
+            "também constituir crime tipificado no código penal brasileiro."
+        )
+        partes = quebrar_em_limite_de_palavra(texto_longo, max_chars=90)
+        for parte in partes:
+            # Nunca deve conter {{ ou }} desbalanceados
+            self.assertEqual(parte.count("{{"), parte.count("}}"), f"Tag de cloze quebrada ao meio: {parte}")
+
+        # Teste com pontuações internas ao cloze (ex: {{art. 37, § 1º, da CF/88}})
+        md = """# Direito
+## Regra
+O dever de publicidade e impessoalidade na propaganda governamental decorre expressamente do {{art. 37, § 1º, da CF/88}}.
+"""
+        caminho = self._criar_arquivo_md(md, "teste_cloze_ponto.md")
+        p = ParserMarkdown(min_chars=30, max_chars=200)
+        p.processar_arquivo(caminho)
+        self.assertGreaterEqual(len(p.cards), 1)
+        self.assertIn("{{art. 37, § 1º, da CF/88}}", p.cards[0].texto)
+
+    # 27. Detecção inteligente de Active Recall em cards de conceito e definição
+    def test_27_deteccao_inteligente_cloze_conceitos(self):
+        # Caso manual: {{termo}}
+        t1, c1 = detectar_cloze_inteligente("O gestor deve obedecer à {{lei formal}}.", "Legalidade")
+        self.assertEqual(t1, "lei formal")
+        self.assertIn("[...]", c1)
+
+        # Caso Padrão A: Termo antes de dois-pontos
+        t2, c2 = detectar_cloze_inteligente("Moralidade Administrativa: A conduta deve ser pautada pela ética e probidade.", "Princípios")
+        self.assertEqual(t2, "Moralidade Administrativa")
+        self.assertTrue(c2.startswith("[...]:"))
+
+        # Caso Padrão B: Título contido no texto
+        t3, c3 = detectar_cloze_inteligente("O princípio da legalidade determina a submissão estrita à lei.", "Legalidade")
+        self.assertEqual(t3.lower(), "legalidade")
+        self.assertIn("[...]", c3)
+
+        # Caso Padrão C: Sujeito com verbo de ligação
+        t4, c4 = detectar_cloze_inteligente("O Estado é a pessoa jurídica de direito público internacional e interno.", "Noções Gerais")
+        self.assertEqual(t4, "O Estado")
+        self.assertTrue(c4.startswith("[...] é"))
+
+        # Caso neutro: card sem padrão evidente de definição não deve sofrer oclusão forçada
+        t5, c5 = detectar_cloze_inteligente("Em decorrência disso, aplicam-se sanções previstas no edital de licitação.", "Disposições Gerais")
+        self.assertIsNone(t5)
+        self.assertEqual(c5, "Em decorrência disso, aplicam-se sanções previstas no edital de licitação.")
+
+    def test_28_geracao_html_cloze_e_keywords_overlay_linux(self):
+        """Valida que overlay_linux.gerar_html_card gera HTML correto para Cloze (Item 2) e Destaques (Item 5)."""
+        import overlay_linux
+        from overlay_linux import gerar_html_card
+
+        # 1. Cloze manual ocluso
+        html_ocul, teve_cloze = gerar_html_card(
+            "O gestor público deve agir nos limites da {{lei formal}} no prazo de 15 dias, sob pena de nulidade.",
+            "Legalidade",
+            em_oclusao=True,
+            destacar_keywords=True,
+            cloze_enabled=True
+        )
+        self.assertTrue(teve_cloze)
+        self.assertIn("[...]", html_ocul)
+        self.assertNotIn("lei formal", html_ocul)
+        self.assertIn("color: #7EC8E3", html_ocul)  # Cor ciano do cloze
+        self.assertIn("color: #FFD266", html_ocul)  # Cor âmbar de prazo (15 dias)
+        self.assertIn("color: #FF7A7A", html_ocul)  # Cor coral de vedação/nulidade (nulidade)
+
+        # 2. Cloze manual revelado
+        html_rev, teve_cloze_rev = gerar_html_card(
+            "O gestor público deve agir nos limites da {{lei formal}} no prazo de 15 dias, sob pena de nulidade.",
+            "Legalidade",
+            em_oclusao=False,
+            destacar_keywords=True,
+            cloze_enabled=True
+        )
+        self.assertTrue(teve_cloze_rev)
+        self.assertNotIn("[...]", html_rev)
+        self.assertIn("lei formal", html_rev)
+        self.assertIn("text-decoration: underline", html_rev)
+
+        # 3. Escaping de caracteres perigosos HTML (< e >)
+        html_esc, _ = gerar_html_card(
+            "Se x < 10 e y > 20, o prazo de 5 dias é nulo.",
+            "Condições",
+            em_oclusao=False,
+            destacar_keywords=True,
+            cloze_enabled=False
+        )
+        self.assertIn("&lt;", html_esc)
+        self.assertIn("&gt;", html_esc)
+    # 29. Múltiplos clozes em um único card são todos oclusos e todos revelados
+    def test_29_multiplos_clozes_manuais(self):
+        from overlay_linux import gerar_html_card
+
+        texto = "O prazo geral é de {{15 dias}} e o recurso cabível é o {{agravo de instrumento}}."
+        # Oclusão
+        html_oc, teve = gerar_html_card(texto, "Prazos", em_oclusao=True, destacar_keywords=True)
+        self.assertTrue(teve)
+        self.assertEqual(html_oc.count("[...]"), 2, "Nem todos os clozes foram oclusos!")
+        self.assertNotIn("15 dias", html_oc)
+        self.assertNotIn("agravo de instrumento", html_oc)
+
+        # Revelação
+        html_rev, _ = gerar_html_card(texto, "Prazos", em_oclusao=False, destacar_keywords=True)
+        self.assertEqual(html_rev.count("[...]"), 0)
+        self.assertIn("15 dias", html_rev)
+        self.assertIn("agravo de instrumento", html_rev)
+        self.assertEqual(html_rev.count("text-decoration: underline"), 2)
+
+    # 30. Cloze envolvendo prazo ou vedação não corrompe tags HTML
+    def test_30_cloze_com_termo_de_prazo_sem_corrupcao_de_tags(self):
+        from overlay_linux import gerar_html_card
+
+        texto = "A prescrição ocorre em {{5 anos}}, sendo {{vedada}} qualquer prorrogação."
+        html_rev, teve = gerar_html_card(texto, "Prescrição", em_oclusao=False, destacar_keywords=True)
+        self.assertTrue(teve)
+        self.assertNotIn("PRAZO:5 anos", html_rev)
+        self.assertNotIn("VEDACAO:vedada", html_rev)
+        self.assertNotIn("\x01", html_rev)
+        self.assertNotIn("\x02", html_rev)
+        self.assertNotIn("\x03", html_rev)
+        self.assertIn("5 anos", html_rev)
+        self.assertIn("vedada", html_rev)
+
+    # 31. Quebra de palavras com cloze longo ou precoce nunca gera chaves desbalanceadas
+    def test_31_quebra_de_palavra_com_cloze_longo_ou_inicio(self):
+        texto = "Início curto {{um termo oculto extremamente longo com vários espaços dentro dele}} e mais texto no final."
+        partes = quebrar_em_limite_de_palavra(texto, max_chars=30)
+        for p in partes:
+            self.assertEqual(p.count("{{"), p.count("}}"), f"Chaves desbalanceadas na parte: '{p}'")
+
+    # 32. Títulos nunca são suprimidos ou elididos com reticências artificiais
+    def test_32_titulos_nunca_sao_suprimidos_ou_elididos(self):
+        md = """# Poderes do Estado
+## Poder Disciplinar
+- *Distinção Crucial em Relação ao Poder de Polícia e aos Demais Ramos Administrativos*:
+  - **Poder Disciplinar**: Fundamenta-se na supremacia especial do Estado perante servidores.
+  - **Poder de Polícia**: Fundamenta-se na supremacia geral do Estado perante a coletividade.
+"""
+        caminho = self._criar_arquivo_md(md)
+        p = ParserMarkdown(min_chars=40, max_chars=200)
+        p.processar_arquivo(caminho)
+
+        self.assertGreaterEqual(len(p.cards), 2)
+        self.assertEqual(p.cards[0].titulo, "Distinção Crucial em Relação ao Poder de Polícia e aos Demais Ramos Administrativos")
+        for c in p.cards:
+            self.assertFalse(c.titulo.endswith("..."), f"Título não pode terminar em reticências: '{c.titulo}'")
+            self.assertFalse(c.titulo.endswith("…"), f"Título não pode terminar em elisão: '{c.titulo}'")
+
+    # 33. Assunto e Subtema extensos nunca são truncados por reticências artificiais
+    def test_33_assunto_e_subtema_nunca_sao_suprimidos_com_reticencias(self):
+        md = """## Tópico de Direito Administrativo e Constitucional com Nome Muito Extenso que Passa de Sessenta e Cinco Caracteres
+### Subtema Detalhado sobre Dever de Motivação dos Atos Administrativos Expresso no Artigo Cinquenta da Lei
+Um ato administrativo que imponha ou agrave deveres, encargos ou sanções deve necessariamente conter motivação expressa e fundamentada.
+"""
+        caminho = self._criar_arquivo_md(md)
+        p = ParserMarkdown(min_chars=40, max_chars=200)
+        p.processar_arquivo(caminho)
+
+        self.assertGreaterEqual(len(p.cards), 1)
+        for c in p.cards:
+            self.assertFalse(c.assunto.endswith("..."), f"Assunto não pode terminar em reticências: '{c.assunto}'")
+            self.assertFalse(c.subtema.endswith("..."), f"Subtema não pode terminar em reticências: '{c.subtema}'")
+            self.assertFalse(c.titulo.endswith("..."), f"Título não pode terminar em reticências: '{c.titulo}'")
+            self.assertIn("Muito Extenso", c.assunto)
+            self.assertIn("Dever de Motivação", c.subtema)
+
+
+    # 34. Interleaving: seleção de cards novos intercala assuntos distintos e não repete consecutivamente
+    def test_34_algoritmo_interleaving_alterna_assuntos(self):
+        from overlay_linux import Card, CardsDeck, ConfigManager
+        import random
+
+        # Mocking minimal deck
+        class DummyConfig:
+            def __init__(self):
+                self.config = {
+                    "new_ratio": 100,
+                    "interleave_topics": 1,
+                    "remember_progress": 0
+                }
+
+        class MockDeck:
+            def __init__(self, cards):
+                self.cards = cards
+                self.progresso = {}
+                self.ultimo_card_id = ""
+                self.ultimo_assunto = ""
+                self.ultimo_subtema = ""
+                self.config_mgr = DummyConfig()
+
+            selecionar_proximo_card = CardsDeck.selecionar_proximo_card
+            salvar_progresso = lambda self: None
+
+        cards = [
+            Card("c1", "Assunto 1", "S1", "T1", "Texto 1", "O1"),
+            Card("c2", "Assunto 1", "S2", "T2", "Texto 2", "O1"),
+            Card("c3", "Assunto 2", "S3", "T3", "Texto 3", "O2"),
+            Card("c4", "Assunto 2", "S4", "T4", "Texto 4", "O2"),
+            Card("c5", "Assunto 3", "S5", "T5", "Texto 5", "O3"),
+            Card("c6", "Assunto 3", "S6", "T6", "Texto 6", "O3")
+        ]
+
+        deck = MockDeck(cards)
+        assuntos_vistos = []
+        for _ in range(6):
+            c = deck.selecionar_proximo_card()
+            self.assertIsNotNone(c)
+            assuntos_vistos.append(c.assunto)
+
+        # Verifica que nenhum card consecutivo repetiu o mesmo assunto
+        for i in range(len(assuntos_vistos) - 1):
+            self.assertNotEqual(
+                assuntos_vistos[i],
+                assuntos_vistos[i+1],
+                f"Assuntos consecutivos não podem se repetir no modo intercalado: {assuntos_vistos}"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 

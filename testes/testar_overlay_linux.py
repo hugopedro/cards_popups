@@ -30,8 +30,13 @@ os.environ["QT_LOGGING_RULES"] = "*.debug=false"
 raiz_projeto = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(raiz_projeto))
 
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt, QPoint, QRect
+try:
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt, QPoint, QRect
+    PYSIDE_AVAILABLE = True
+except ImportError:
+    PYSIDE_AVAILABLE = False
+
 from overlay_linux import (
     Card, ConfigManager, CardsDeck, OverlayWindow,
     OverlayController, obter_socket_path, enviar_comando_ipc,
@@ -39,12 +44,16 @@ from overlay_linux import (
 )
 
 
-# Garantir uma única instância de QApplication para todos os testes
-app = QApplication.instance()
-if not app:
-    app = QApplication(["test_overlay", "-platform", "offscreen"])
+# Garantir uma única instância de QApplication para todos os testes se PySide6 estiver disponível
+if PYSIDE_AVAILABLE:
+    app = QApplication.instance()
+    if not app:
+        app = QApplication(["test_overlay", "-platform", "offscreen"])
+else:
+    app = None
 
 
+@unittest.skipUnless(PYSIDE_AVAILABLE, "PySide6 não está disponível neste ambiente (necessário apenas para overlay nativo no Linux)")
 class TestesOverlayLinux(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
