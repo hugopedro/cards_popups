@@ -678,6 +678,7 @@ class OverlayWindow(QWidget):
     Suporta modo interativo (arrastável livremente com mouse e botão de lixeira para descarte)
     ou modo click-through passivo configurável via config.ini.
     """
+    sinal_ocultar_solicitado = Signal()
     sinal_excluir_solicitado = Signal()
     sinal_arrasto_iniciado = Signal()
     sinal_arrasto_finalizado = Signal()
@@ -744,6 +745,16 @@ class OverlayWindow(QWidget):
         self.lbl_assunto = QLabel("")
         self.lbl_assunto.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
+        # Botão Minimizar (ocultar card)
+        self.btn_minimizar = QPushButton("—")
+        self.btn_minimizar.setFixedSize(22, 22)
+        self.btn_minimizar.setToolTip("Minimizar card")
+        self.btn_minimizar.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_minimizar.setStyleSheet("color: #88A89A; font-weight: bold; font-size: 11pt; border: none; background: transparent;")
+        self.btn_minimizar.clicked.connect(self.sinal_ocultar_solicitado.emit)
+        if self.click_through:
+            self.btn_minimizar.hide()
+
         # Botão de Lixeira vetorial (excluir card inútil)
         self.btn_lixeira = QPushButton()
         self.btn_lixeira.setFixedSize(22, 22)
@@ -756,6 +767,7 @@ class OverlayWindow(QWidget):
             self.btn_lixeira.hide()
 
         self.layout_header.addWidget(self.lbl_assunto, 1)
+        self.layout_header.addWidget(self.btn_minimizar, 0, Qt.AlignmentFlag.AlignRight)
         self.layout_header.addWidget(self.btn_lixeira, 0, Qt.AlignmentFlag.AlignRight)
 
         # Rótulo de Título em destaque (permite quebras de linha dinâmicas sem truncamento)
@@ -1188,6 +1200,7 @@ class OverlayController(QObject):
         self.config_mgr = config_mgr
         self.deck = deck
         self.window = OverlayWindow(config_mgr, raiz_projeto=raiz_projeto)
+        self.window.sinal_ocultar_solicitado.connect(self.ocultar_card)
         self.window.sinal_excluir_solicitado.connect(self.excluir_card_atual)
         self.window.sinal_arrasto_iniciado.connect(self.pausar_temporizador_visibilidade)
         self.window.sinal_arrasto_finalizado.connect(self.retomar_temporizador_visibilidade)
@@ -1254,6 +1267,9 @@ class OverlayController(QObject):
         menu = QMenu()
         self.acao_pausa = menu.addAction("⏯️  Pausar / Retomar")
         self.acao_pausa.triggered.connect(self.alternar_pausa)
+
+        acao_ultimo = menu.addAction("⏮️  Mostrar Último Card Novamente")
+        acao_ultimo.triggered.connect(self.mostrar_ultimo_card)
 
         acao_proximo = menu.addAction("⏭️  Próximo Card")
         acao_proximo.triggered.connect(self.proximo_card_manual)
@@ -1536,6 +1552,29 @@ class OverlayController(QObject):
         self.timer_visibilidade.stop()
         self.timer_ciclo.stop()
         self.exibir_proximo_card()
+
+    def mostrar_ultimo_card(self) -> None:
+        """Exibe novamente o último card exibido ou minimizado."""
+        if not self.card_atual:
+            if self.deck.ultimo_card_id:
+                for c in self.deck.cards:
+                    if c.id == self.deck.ultimo_card_id:
+                        self.card_atual = c
+                        break
+            if not self.card_atual and self.deck.cards:
+                self.card_atual = self.deck.cards[0]
+
+        if not self.card_atual:
+            return
+
+        self.exibir_card(self.card_atual)
+        self.window.mostrar_sem_foco()
+        self.card_visivel = True
+
+        cfg_vis = self.config_mgr.config.get("visible_seconds", 30)
+        cfg_int = self.config_mgr.config.get("interval_seconds", 300)
+        self.timer_visibilidade.start(cfg_vis * 1000)
+        self.timer_ciclo.start(cfg_int * 1000)
 
     def recarregar_conteudo(self) -> bool:
         print("\n[+] Reprocessando conteúdo Markdown...")

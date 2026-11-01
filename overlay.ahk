@@ -67,6 +67,7 @@ global CtrlOrigem := ""
 global CustomPos := ""
 global CardAtual := ""
 global BtnLixeira := ""
+global BtnMinimizar := ""
 global EstaEmOclusao := false
 global RichEditCarregado := false
 global HBrushFundo := ""
@@ -80,15 +81,17 @@ CarregarCards()
 SincronizarProgressoComCards()
 CriarInterface()
 A_TrayMenu.Add()
+A_TrayMenu.Add("Mostrar Último Card Novamente", (*) => MostrarUltimoCard())
 A_TrayMenu.Add("Restaurar Posição Padrão", (*) => RedefinirPosicao())
 A_TrayMenu.Add("Revelar Termo Oculto (Ctrl+Alt+Espaço)", (*) => RevelarClozeAtual())
 
 ; Hotkeys globais padrão
 ^!p::AlternarPausa()          ; Ctrl + Alt + P: Pausar / Retomar
 ^!n::ProximoCardManual()      ; Ctrl + Alt + N: Próximo card agora
+^!u::MostrarUltimoCard()      ; Ctrl + Alt + U: Mostrar último card novamente
 ^!x::ExcluirCardAtual()       ; Ctrl + Alt + X: Excluir card inútil
 ^!c::RedefinirPosicao()       ; Ctrl + Alt + C: Restaurar posição padrão
-^!h::OcultarCardAtual()       ; Ctrl + Alt + H: Esconder card atual
+^!h::OcultarCardAtual()       ; Ctrl + Alt + H: Esconder / Minimizar card atual
 ^!Space::RevelarClozeAtual()  ; Ctrl + Alt + Espaço: Revelar termo/resposta oculta
 ^!r::RecarregarConteudo()     ; Ctrl + Alt + R: Reprocessar e recarregar
 ^!q::SairAplicativo()         ; Ctrl + Alt + Q: Sair e salvar
@@ -382,7 +385,11 @@ AoCtlColorOverlay(wParam, lParam, msg, hwnd) {
 }
 
 AoSetCursorOverlay(wParam, lParam, msg, hwnd) {
-    global CtrlTexto
+    global CtrlTexto, BtnLixeira, BtnMinimizar
+    if ((BtnLixeira != "" && hwnd == BtnLixeira.Hwnd) || (BtnMinimizar != "" && hwnd == BtnMinimizar.Hwnd)) {
+        DllCall("SetCursor", "Ptr", DllCall("LoadCursor", "Ptr", 0, "Int", 32649, "Ptr")) ; IDC_HAND
+        return true
+    }
     if (CtrlTexto != "" && (hwnd == CtrlTexto.Hwnd || (IsObject(CtrlTexto) && hwnd == CtrlTexto))) {
         DllCall("SetCursor", "Ptr", DllCall("LoadCursor", "Ptr", 0, "Int", 32512, "Ptr")) ; IDC_ARROW
         return true
@@ -595,15 +602,21 @@ RenderizarCard(card) {
 
     origemTxt := card["origem"] . "  •  ID: " . SubStr(card["id"], 1, 8)
 
-    ; Cabeçalho: Assunto / Subtema e Botão de Lixeira (sem truncamento por 75 caracteres)
+    ; Cabeçalho: Assunto / Subtema e Botões de Ação (Minimizar e Lixeira)
     if (!Config["click_through"]) {
         wBtn := 22
-        wAssunto := wBox - wBtn - 8
+        wAssunto := wBox - (wBtn * 2 + 8) - 8
         OverlayGui.SetFont("s" . fSub . " bold c88A89A", "Segoe UI")
         CtrlAssunto := OverlayGui.Add("Text", "xm ym +Disabled w" . wAssunto, assuntoTxt)
 
         OverlayGui.SetFont("s10 bold c88A89A", "Segoe UI")
-        BtnLixeira := OverlayGui.Add("Text", "x" . (wBox + 16 - wBtn) . " y12 w" . wBtn . " h18 Center +0x200 BackgroundTrans", "🗑")
+        xLixeira := wBox + 16 - wBtn
+        xMinimizar := xLixeira - wBtn - 4
+
+        BtnMinimizar := OverlayGui.Add("Text", "x" . xMinimizar . " y12 w" . wBtn . " h18 Center +0x200 BackgroundTrans", "—")
+        BtnMinimizar.OnEvent("Click", (*) => OcultarCard())
+
+        BtnLixeira := OverlayGui.Add("Text", "x" . xLixeira . " y12 w" . wBtn . " h18 Center +0x200 BackgroundTrans", "🗑")
         BtnLixeira.OnEvent("Click", (*) => ExcluirCardAtual())
 
         CtrlAssunto.GetPos(&ax, &ay, &aw, &ah)
@@ -754,6 +767,8 @@ ArrastoJanelaAHK(wParam, lParam, msg, hwnd) {
         if (!pertence)
             return
         if (BtnLixeira != "" && hwnd == BtnLixeira.Hwnd)
+            return
+        if (BtnMinimizar != "" && hwnd == BtnMinimizar.Hwnd)
             return
 
         if (EstaEmOclusao)
@@ -1131,6 +1146,32 @@ ProximoCardManual() {
 OcultarCardAtual() {
     SetTimer(OcultarCard, 0)
     OcultarCard()
+}
+
+MostrarUltimoCard() {
+    global CardAtual, Cards, UltimoCardId, CardVisivel, OverlayGui, Config
+    if (CardAtual == "" && UltimoCardId != "") {
+        for c in Cards {
+            if (c["id"] == UltimoCardId) {
+                CardAtual := c
+                break
+            }
+        }
+    }
+    if (CardAtual == "" && Cards.Length > 0) {
+        CardAtual := Cards[1]
+    }
+    if (CardAtual == "")
+        return
+
+    ; Re-renderiza o card
+    RenderizarCard(CardAtual)
+    CardVisivel := true
+
+    ; Reinicia temporizador de permanência (padrão: 30 segundos)
+    SetTimer(OcultarCard, -(Config["visible_seconds"] * 1000))
+    ; Reagenda o próximo ciclo normal a partir de agora
+    SetTimer(ExibirProximoCard, -(Config["interval_seconds"] * 1000))
 }
 
 RecarregarConteudo() {
